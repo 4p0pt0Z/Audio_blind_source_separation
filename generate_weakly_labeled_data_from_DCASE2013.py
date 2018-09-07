@@ -30,7 +30,7 @@ def generate_mixed_files(audio_files, audio_data, n_files, output_folder, length
     # The 16 classes present in the DCASE2013 sound event detection data set.
     classes = ["alert", "clearthroat", "cough", "doorslam", "drawer", "keyboard", "keys", "knock", "laughter", "mouse",
                "page-turn", "pendrop", "phone", "printer", "speech", "switch"]
-    header = ["name"] + classes
+    header = ["filename"] + classes
 
     total_n_events = len(audio_files)
     mixed_audio_length = int(np.ceil(sampling_rate * length))
