@@ -38,7 +38,7 @@ class DCASE2013_remixed_dataset(torchdata.Dataset):
             "test_pct": 0.1,
 
             # Path to the mix files folder (also include the label file)
-            "data_folder": "Datadir/remixed_DCASE2013"
+            "data_folder": "Datadir/remixed_DCASE2013"  # to this will be appended the set folder (train-dev-val)
         }
         return config
 
