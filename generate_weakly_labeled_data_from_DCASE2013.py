@@ -73,7 +73,7 @@ def generate_mixed_files(audio_files, audio_data, n_files, output_folder, length
             else:
                 # Overlap is authorized, so we simply draw random start times and copy the entire audio files in the mix
                 for idx in events_idx:
-                    event_length = np.amin([audio_data[idx].shape[0], mixed_audio_length-1])  # clip to length of mix
+                    event_length = np.amin([audio_data[idx].shape[0], mixed_audio_length - 1])  # clip to length of mix
                     start_time = np.random.randint(mixed_audio_length - event_length)
                     mixed_audio[start_time: start_time + event_length] += audio_data[idx][:event_length]
 
@@ -81,8 +81,8 @@ def generate_mixed_files(audio_files, audio_data, n_files, output_folder, length
             noise = np.random.random(mixed_audio_length)
             mixed_audio += np.mean(mixed_audio) * wn_ratio * noise
             # Save file
-            name = uuid.uuid1().hex
-            librosa.output.write_wav(os.path.join(output_folder, name + ".wav"), mixed_audio, sampling_rate)
+            name = uuid.uuid1().hex + '.wav'
+            librosa.output.write_wav(os.path.join(output_folder, name), mixed_audio, sampling_rate)
             # save file labels
             labels = [0] * len(classes)
             for idx in events_idx:
@@ -103,13 +103,19 @@ def main():
                         help="Maximal number of audio event per mixed file.")
     parser.add_argument("-o", "--overlap", type=str2bool, default=False,
                         help="Controls if the audio events can overlap in the generated mixed files. Default: False.")
-    parser.add_argument("-r", "--white_noise_ratio", type=float, default=0.05,
+    parser.add_argument("-r", "--white_noise_ratio", type=float, default=10.0,
                         help="Ratio between the mean of the clean mixed audio, "
                              "and the white noise to apply as background")
     parser.add_argument("-sr", "--sampling_rate", type=int, default=16000,
                         help="The sampling rate to use for the generated mixed files.")
     parser.add_argument("-N", "--n_files", type=int, default=2000,
                         help="Number of mixed file to generate. Default: 2000")
+    parser.add_argument("-p_tr", "--training_percentage", type=float, default=0.8,
+                        help="The percentage of the files to use to generate the mixes for the training set. "
+                             "(validation percentage is deduced from training and development percentages)")
+    parser.add_argument("-p_dev", "--development_percentage", type=float, default=0.1,
+                        help="The percentage of the files to use to generate the mixes for the development set. "
+                             "(validation percentage is deduced from training and development percentages")
     parser.add_argument("-df", "--DCASE_2013_stereo_data_folder", type=str, required=True,
                         help="Path to the folder 'singlesounds_stereo' provided as part of the DCASE 2013 dataset, "
                              "containing the audio files to mix")
@@ -120,15 +126,45 @@ def main():
 
     # Load the DCASE2013 dataset audio files from disk
     audio_files = [f for f in os.listdir(args["DCASE_2013_stereo_data_folder"])
-                   if os.path.isfile(os.path.join(args["DCASE_2013_stereo_data_folder"], f))]
+                   if os.path.isfile(os.path.join(args["DCASE_2013_stereo_data_folder"], f)) and f.endswith(".wav")]
     audio_data = [librosa.core.load(os.path.join(args["DCASE_2013_stereo_data_folder"], f), sr=args["sampling_rate"])[0]
                   for f in audio_files]
 
-    # Check if the output folder exists, if not creates it
-    if not os.path.exists(args["output_folder"]):
-        os.makedirs(args["output_folder"])
+    # Split the files in training, development and validation set
+    permutation = np.arange(len(audio_files))
+    np.random.shuffle(permutation)  # random permutation to shuffle the data
+    n_tr = int(args["training_percentage"] * len(audio_files))
+    n_dev = int(args["development_percentage"] * len(audio_files))
 
-    generate_mixed_files(audio_files, audio_data, args["n_files"], args["output_folder"], args["length"],
+    tr_audio_files = [audio_files[i] for i in permutation[:n_tr]]
+    dev_audio_files = [audio_files[i] for i in permutation[n_tr: n_tr + n_dev]]
+    test_audio_files = [audio_files[i] for i in permutation[n_tr + n_dev: -1]]
+
+    tr_audio_data = [audio_data[i] for i in permutation[:n_tr]]
+    dev_audio_data = [audio_data[i] for i in permutation[n_tr: n_tr + n_dev]]
+    test_audio_data = [audio_data[i] for i in permutation[n_tr + n_dev: -1]]
+
+    # Check if the output folder exists, if not creates it, otherwise inform user and stop execution
+    for set_name in ["training", "development", "validation"]:
+        if not os.path.exists(os.path.join(args["output_folder"], set_name)):
+            os.makedirs(os.path.join(args["output_folder"], set_name))
+        else:
+            raise ValueError('Output folders already exist !')
+
+    generate_mixed_files(tr_audio_files, tr_audio_data,
+                         int(args["n_files"] * args["training_percentage"]),
+                         os.path.join(args["output_folder"], "training"), args["length"],
+                         args["max_event"], args["overlap"], args["white_noise_ratio"], args["sampling_rate"])
+
+    generate_mixed_files(dev_audio_files, dev_audio_data,
+                         int(args["n_files"] * args["development_percentage"]),
+                         os.path.join(args["output_folder"], "development"), args["length"],
+                         args["max_event"], args["overlap"], args["white_noise_ratio"], args["sampling_rate"])
+
+    generate_mixed_files(test_audio_files, test_audio_data,
+                         int(np.ceil(args["n_files"]
+                                     * (1 - args["training_percentage"] - args["development_percentage"]))),
+                         os.path.join(args["output_folder"], "validation"), args["length"],
                          args["max_event"], args["overlap"], args["white_noise_ratio"], args["sampling_rate"])
 
 
