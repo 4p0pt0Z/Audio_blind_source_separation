@@ -8,7 +8,7 @@ import uuid
 from helpers import str2bool
 
 
-def generate_mixed_files(audio_files, audio_data, n_files, output_folder, length, max_event, overlap, wn_ratio,
+def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folder, length, max_event, overlap, wn_ratio,
                          sampling_rate):
     """
         Generates mixed audio files from the input audio files. The generated files are saved in the output folder,
@@ -18,6 +18,7 @@ def generate_mixed_files(audio_files, audio_data, n_files, output_folder, length
     Args:
         audio_files (lst): List of the audio files (eg ["Alert01.wav", ...]
         audio_data (lst): List of numpy arrays storing the audio data for each file
+        classes (lst): List of str: the audio event classes present in the audio_files
         n_files (int): Number of mixed files to generate
         output_folder (str): Path to the output folder for the generated files (folder is created if not-existing)
         length (float): Length of the mixed audio files
@@ -27,9 +28,7 @@ def generate_mixed_files(audio_files, audio_data, n_files, output_folder, length
         sampling_rate (int): Sampling rate for the mixed audio files
 
     """
-    # The 16 classes present in the DCASE2013 sound event detection data set.
-    classes = ["alert", "clearthroat", "cough", "doorslam", "drawer", "keyboard", "keys", "knock", "laughter", "mouse",
-               "page-turn", "pendrop", "phone", "printer", "speech", "switch"]
+
     header = ["filename"] + classes
 
     total_n_events = len(audio_files)
@@ -124,26 +123,6 @@ def main():
 
     args = vars(parser.parse_args())
 
-    # Load the DCASE2013 dataset audio files from disk
-    audio_files = [f for f in os.listdir(args["DCASE_2013_stereo_data_folder"])
-                   if os.path.isfile(os.path.join(args["DCASE_2013_stereo_data_folder"], f)) and f.endswith(".wav")]
-    audio_data = [librosa.core.load(os.path.join(args["DCASE_2013_stereo_data_folder"], f), sr=args["sampling_rate"])[0]
-                  for f in audio_files]
-
-    # Split the files in training, development and validation set
-    permutation = np.arange(len(audio_files))
-    np.random.shuffle(permutation)  # random permutation to shuffle the data
-    n_tr = int(args["training_percentage"] * len(audio_files))
-    n_dev = int(args["development_percentage"] * len(audio_files))
-
-    tr_audio_files = [audio_files[i] for i in permutation[:n_tr]]
-    dev_audio_files = [audio_files[i] for i in permutation[n_tr: n_tr + n_dev]]
-    test_audio_files = [audio_files[i] for i in permutation[n_tr + n_dev: -1]]
-
-    tr_audio_data = [audio_data[i] for i in permutation[:n_tr]]
-    dev_audio_data = [audio_data[i] for i in permutation[n_tr: n_tr + n_dev]]
-    test_audio_data = [audio_data[i] for i in permutation[n_tr + n_dev: -1]]
-
     # Check if the output folder exists, if not creates it, otherwise inform user and stop execution
     for set_name in ["training", "development", "validation"]:
         if not os.path.exists(os.path.join(args["output_folder"], set_name)):
@@ -151,17 +130,54 @@ def main():
         else:
             raise ValueError('Output folders already exist !')
 
-    generate_mixed_files(tr_audio_files, tr_audio_data,
-                         int(args["n_files"] * args["training_percentage"]),
+    # The 16 classes present in the DCASE2013 sound event detection data set.
+    classes = ["alert", "clearthroat", "cough", "doorslam", "drawer", "keyboard", "keys", "knock", "laughter", "mouse",
+               "pageturn", "pendrop", "phone", "printer", "speech", "switch"]
+
+    tr_audio_files = []
+    dev_audio_files = []
+    test_audio_files = []
+
+    tr_audio_data = []
+    dev_audio_data = []
+    test_audio_data = []
+
+    all_audio_files = [f for f in os.listdir(args["DCASE_2013_stereo_data_folder"])
+                       if os.path.isfile(os.path.join(args["DCASE_2013_stereo_data_folder"], f))
+                       and f.endswith(".wav")]
+
+    for a_class in classes:
+        # Load the DCASE2013 dataset audio files of the class 'a_class' from disk
+        audio_files = [f for f in all_audio_files if f.startswith(a_class)]
+        audio_data = [librosa.core.load(os.path.join(args["DCASE_2013_stereo_data_folder"], f),
+                                        sr=args["sampling_rate"])[0]
+                      for f in audio_files]
+
+        # Split the files in training, development and validation set
+        permutation = np.arange(len(audio_files))
+        np.random.shuffle(permutation)  # random permutation to shuffle the data
+        n_tr = int(np.floor(args["training_percentage"] * len(audio_files)))
+        n_dev = int(np.floor(args["development_percentage"] * len(audio_files)))
+
+        tr_audio_files.extend([audio_files[i] for i in permutation[:n_tr]])
+        dev_audio_files.extend([audio_files[i] for i in permutation[n_tr: n_tr + n_dev]])
+        test_audio_files.extend([audio_files[i] for i in permutation[n_tr + n_dev:]])
+
+        tr_audio_data.extend([audio_data[i] for i in permutation[:n_tr]])
+        dev_audio_data.extend([audio_data[i] for i in permutation[n_tr: n_tr + n_dev]])
+        test_audio_data.extend([audio_data[i] for i in permutation[n_tr + n_dev:]])
+
+    generate_mixed_files(tr_audio_files, tr_audio_data, classes,
+                         int(np.floor(args["n_files"] * args["training_percentage"])),
                          os.path.join(args["output_folder"], "training"), args["length"],
                          args["max_event"], args["overlap"], args["white_noise_ratio"], args["sampling_rate"])
 
-    generate_mixed_files(dev_audio_files, dev_audio_data,
-                         int(args["n_files"] * args["development_percentage"]),
+    generate_mixed_files(dev_audio_files, dev_audio_data, classes,
+                         int(np.floor(args["n_files"] * args["development_percentage"])),
                          os.path.join(args["output_folder"], "development"), args["length"],
                          args["max_event"], args["overlap"], args["white_noise_ratio"], args["sampling_rate"])
 
-    generate_mixed_files(test_audio_files, test_audio_data,
+    generate_mixed_files(test_audio_files, test_audio_data, classes,
                          int(np.ceil(args["n_files"]
                                      * (1 - args["training_percentage"] - args["development_percentage"]))),
                          os.path.join(args["output_folder"], "validation"), args["length"],
