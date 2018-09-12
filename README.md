@@ -32,3 +32,15 @@ This can be done with the script `generate_weakly_labeled_data_from_DCASE2013.py
 | DCASE_2013_stereo_data_folder | str |  | Path to the DCASE2013 sound event detection (subtask 2) dataset |
 | output_folder | str |  | Path to the folder where the mix will be saved | 
 
+#### Training framework
+The training framework is divided in 3 major parts, each in a separate file:
+* `data_set.py`: Implements how the audio files are loaded from disk and how the Frequency-Time representation of the audio is extracted. Also divides the data into training, development and validation set.
+* `model.py`: Implements the model as a torch.nn.module.
+* `train.py`: Implements the training loop and evaluation. Handles the saving and loading of models from checkpoint files.
+
+In each of these file, there is typically one class that is going to be used. For instance, if we want to train a VGG-like model on mixes build from the DCASE2013 data set, we are going to use the `DCASE2013_remixed_data_set` class in `data_set.py`, the `VGG_like_CNN` class in `model.py`, and the `TrainingManager` in `train.py`.  
+To train with these classes, you must pass their identifier to the main script. The identifier is often the name of the class ; it is the value look up in the function `find_...` in each of these file, which return the corresponding class.
+
+The rest of the available command line arguments are any parameters appearing in the `default_config` method of the classes that have been selected.
+
+TODO: describe the arguments.
