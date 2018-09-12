@@ -10,7 +10,22 @@ import scipy
 import librosa
 
 
-class DCASE2013_remixed_dataset(torchdata.Dataset):
+def find_data_set_class(data_set_type):
+    """
+        Get the class of a model from a string identifier
+    Args:
+        data_set_type (str):
+
+    Returns:
+        Class implementing the desired model.
+    """
+    if data_set_type == "DCASE2013_remixed_data_set":
+        return DCASE2013_remixed_data_set
+    else:
+        raise NotImplementedError("Data set type " + data_set_type + " is not available.")
+
+
+class DCASE2013_remixed_data_set(torchdata.Dataset):
     """
         This class implements the audio processing to apply on the audio files remixed from the DCASE2013 data set.
         For speed, all the audio processing is done during the initialization method, then the features and labels
@@ -31,11 +46,6 @@ class DCASE2013_remixed_dataset(torchdata.Dataset):
             "n_Mel_filters": 64,
             "Mel_min_freq": 20,
             "Mel_max_freq": 8000,
-
-            # Train - dev - test split proportion
-            "train_pct": 0.8,
-            "dev_pct": 0.1,
-            "test_pct": 0.1,
 
             # Path to the mix files folder (also include the label file)
             "data_folder": "Datadir/remixed_DCASE2013"  # to this will be appended the set folder (train-dev-val)
@@ -84,11 +94,11 @@ class DCASE2013_remixed_dataset(torchdata.Dataset):
                                                                      * self.config["sampling_rate"] // 1000)),
                                                   n_mels=self.config["n_Mel_filters"],
                                                   fmin=self.config["Mel_min_freq"],
-                                                  fmax=self.config["Mel_max_freq"])
+                                                  fmax=self.config["Mel_max_freq"]).astype(np.float32)
         self.features = torch.from_numpy(np.asarray([self.extract_features(os.path.join(self.config["data_folder"],
                                                                                         file))
                                                      for file in files_df["filename"]]))
-        self.labels = torch.from_numpy(files_df.drop("filename", axis=1).values)
+        self.labels = torch.from_numpy(files_df.drop("filename", axis=1).values.astype(np.float32))
 
     def extract_features(self, filename):
         """
@@ -97,7 +107,7 @@ class DCASE2013_remixed_dataset(torchdata.Dataset):
             filename (str): Path to the audio file to process
 
         Returns:
-            np.ndarray with shape (1, T, F) (1 is for channel dimension in image processing) with the log - Mel scaled
+            np.ndarray with shape (1, F, T) (1 is for channel dimension in image processing) with the log - Mel scaled
             spectrogram values.
         """
         audio, _ = librosa.core.load(filename, sr=self.config["sampling_rate"], mono=True)
@@ -113,16 +123,16 @@ class DCASE2013_remixed_dataset(torchdata.Dataset):
             features = np.where(mel_spectrogram > 0, 10.0 * np.log10(mel_spectrogram), mel_spectrogram)
         return np.expand_dims(features, 0)  # introduce a dimension for the 'image' channel
 
-    def move_data_to(self, device):
+    def to(self, device):
         """
-            Moves the tensors holding the samples features and labels to the specified device
-            Use it to move to gpu as a tensor
+            After this method is called, the data set should only provide batches of tensors on 'device',
+            therefore in this case we move the features and label to the corresponding device.
         Args:
             device (torch.device):
 
         """
-        self.features.to(device)
-        self.labels.to(device)
+        self.features = self.features.to(device)
+        self.labels = self.labels.to(device)
 
     def __getitem__(self, index):
         return self.features[index], self.labels[index]
