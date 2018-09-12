@@ -40,11 +40,11 @@ def parse_arguments():
     model_default_config = mod.find_model_class(args["model_type"]).default_config()
     training_default_config = tr.TrainingManager.default_config()
     # merge the default dictionaries
-    config = {**data_set_default_config, **model_default_config, **training_default_config}
+    default_config = {**data_set_default_config, **model_default_config, **training_default_config}
 
     full_parser = argparse.ArgumentParser(allow_abbrev=False)
     # Add all default values as potential arguments
-    for key, value in config.items():
+    for key, value in default_config.items():
         key = "--{}".format(key)
         if isinstance(value, list) or isinstance(value, tuple):
             full_parser.add_argument(key, default=value, nargs='*', type=type(value[0]))
@@ -52,9 +52,16 @@ def parse_arguments():
             full_parser.add_argument(key, default=value, nargs='?', type=str2bool)
         else:
             full_parser.add_argument(key, default=value, type=type(value))
-    # update the values in config with the passed arguments
-        config.update(vars(full_parser.parse_known_args()[0]))
-    return config
+
+    parsed_args = vars(full_parser.parse_known_args()[0])
+    if parsed_args["checkpoint_path"]:
+        # Return only the values explicitly passed by user. Other values should be loaded from checkpoint
+        new_args = {key: value for key, value in parsed_args.items() if value != default_config[key]}
+        return new_args
+    else:
+        # update the values in config with the passed arguments or the default arguments
+        default_config.update(parsed_args)
+        return default_config
 
 
 if __name__ == '__main__':
