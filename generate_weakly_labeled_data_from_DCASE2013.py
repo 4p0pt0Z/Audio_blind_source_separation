@@ -51,14 +51,19 @@ def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folde
                 cum_length = np.sum([audio_data[i].shape[0] for i in events_idx])
                 if cum_length > mixed_audio_length:
                     start = 0
-                    for idx in events_idx:
-                        available_length = np.amin([audio_data[idx].shape[0],
-                                                    np.max([mixed_audio_length - (start + audio_data[idx].shape[0]),
-                                                            0])])
-                        if available_length == 0:
+                    for idx_idx, idx in enumerate(events_idx):
+                        # If audio_data[idx] fits in the mix: copy it entirely
+                        if mixed_audio_length - start >= audio_data[idx].shape[0]:
+                            mixed_audio[start:start + audio_data[idx].shape[0]] = audio_data[idx]
+                            start += audio_data[idx].shape[0]
+                        else:  # If not: select a random part of the audio event to copy in the mix.
+                            event_start_time = np.random.randint(
+                                audio_data[idx].shape[0] - (mixed_audio_length - start))
+                            mixed_audio[start:] = audio_data[idx][event_start_time:
+                                                                  event_start_time + mixed_audio_length - start]
+                            # No more events will fit in this mix: remove the rest of the labels.
+                            events_idx = events_idx[:idx_idx + 1]
                             break
-                        mixed_audio[start: start + available_length] = audio_data[idx][:available_length]
-                        start += available_length
                 else:
                     # randomly chose a total of silence amount to include between the files, in the available length.
                     total_silence_between_files = np.random.randint(mixed_audio_length - cum_length)
@@ -77,11 +82,11 @@ def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folde
                     mixed_audio[start_time: start_time + event_length] += audio_data[idx][:event_length]
 
             # Add white noise
-            noise = np.random.random(mixed_audio_length)
-            mixed_audio += np.mean(mixed_audio) * wn_ratio * noise
+            noise = np.random.normal(0.0, 1.0, mixed_audio_length)  # scale noise so that the energy ratio is 'wn_ratio'
+            mixed_audio += np.sqrt(wn_ratio * np.sum(mixed_audio ** 2) / np.sum(noise ** 2)) * noise
             # Save file
             name = uuid.uuid1().hex + '.wav'
-            librosa.output.write_wav(os.path.join(output_folder, name), mixed_audio, sampling_rate)
+            librosa.output.write_wav(os.path.join(output_folder, name), mixed_audio, sampling_rate, norm=True)
             # save file labels
             labels = [0] * len(classes)
             for idx in events_idx:
@@ -102,9 +107,9 @@ def main():
                         help="Maximal number of audio event per mixed file.")
     parser.add_argument("-o", "--overlap", type=str2bool, default=False,
                         help="Controls if the audio events can overlap in the generated mixed files. Default: False.")
-    parser.add_argument("-r", "--white_noise_ratio", type=float, default=10.0,
-                        help="Ratio between the mean of the clean mixed audio, "
-                             "and the white noise to apply as background")
+    parser.add_argument("-r", "--white_noise_ratio", type=float, default=0.001,
+                        help="Ratio between the energy of the clean mixed audio, "
+                             "and the energy of the white noise to apply as background")
     parser.add_argument("-sr", "--sampling_rate", type=int, default=16000,
                         help="The sampling rate to use for the generated mixed files.")
     parser.add_argument("-N", "--n_files", type=int, default=2000,
