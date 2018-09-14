@@ -47,6 +47,8 @@ class DCASE2013_remixed_data_set(torchdata.Dataset):
             "Mel_min_freq": 20,
             "Mel_max_freq": 8000,
 
+            "standardize": False,
+
             # Path to the mix files folder (also include the label file)
             "data_folder": "Datadir/remixed_DCASE2013"  # to this will be appended the set folder (train-dev-val)
         }
@@ -98,7 +100,14 @@ class DCASE2013_remixed_data_set(torchdata.Dataset):
         self.features = torch.from_numpy(np.asarray([self.extract_features(os.path.join(self.config["data_folder"],
                                                                                         file))
                                                      for file in files_df["filename"]]))
+        if config["standardize"]:
+            self.standardize()
         self.labels = torch.from_numpy(files_df.drop("filename", axis=1).values.astype(np.float32))
+
+    def standardize(self):
+        for i in range(self.features.shape[1]):  # average per-channel
+            self.features[:, i, :, :] = (self.features[:, i, :, :] - self.features[:, i, :, :].mean()) \
+                                        / self.features[:, i, :, :].std()
 
     def extract_features(self, filename):
         """
