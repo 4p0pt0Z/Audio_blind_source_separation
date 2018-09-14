@@ -26,7 +26,7 @@ class TrainingManager:
             "gpu_no": 0,
 
             "metric": "",  # Accuracy, F-score, MCC, etc... See available in 'compute_metric'
-            "threshold": [0],  # If required by the metric. Either 1 threshold common to all classes or a list
+            "threshold": [0.5],  # If required by the metric. Either 1 threshold common to all classes or a list
 
             "loss_f": "",  # Loss function to use: BCE, multilabelSoftMarginLoss, etc ... (see 'init')
 
@@ -38,7 +38,7 @@ class TrainingManager:
             # Learning rate scheduler parameters
             "scheduler_type": "",
             "scheduler_step_size": 0,  # Used with StepLR
-            "scheduler_gamma": 0.0,  # Used with StepLR, MultiStepLR and ReduceLROnPlateau
+            "scheduler_gamma": 0.0,  # Used with stepLR, multiStepLR and reduceLROnPlateau
             "scheduler_milestones": [0.0],  # Used with MultiStepLR
             "scheduler_patience": 0,  # Used with ReduceLROnPlateau
 
@@ -79,12 +79,12 @@ class TrainingManager:
         elif self.config["scheduler_type"] == "multiStepLR":
             # Reduce the learning rate when the epochs in milestones are reached
             self.scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer=self.optimizer,
-                                                                  milestones=self.config["milestones"],
+                                                                  milestones=self.config["scheduler_milestones"],
                                                                   gamma=self.config["scheduler_gamma"])
-        elif self.config["scheduler_type"] == "ReduceLROnPlateau":
+        elif self.config["scheduler_type"] == "reduceLROnPlateau":
             # Reduce learning rate if the loss value does not decrease during 'patience' number of epoch
             self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=self.optimizer,
-                                                                        patience=self.config["patience"],
+                                                                        patience=self.config["scheduler_patience"],
                                                                         factor=self.config["scheduler_gamma"])
         elif not self.config["scheduler_type"]:
             # Do not use any scheduler
@@ -137,16 +137,27 @@ class TrainingManager:
             return skmetrics.roc_auc_score(labels, predictions)
         else:
             # Apply threshold:
-            predictions[predictions >= self.config["threshold"]] = 1
-            predictions[predictions < self.config["threshold"]] = 0
+            if len(self.config["threshold"]) == 1:
+                predictions[predictions >= self.config["threshold"][0]] = 1
+                predictions[predictions < self.config["threshold"][0]] = 0
+            elif len(self.config["threshold"]) != predictions.shape[1]:
+                raise ValueError(
+                    "Number of thresholds {}".format(len(self.config["threshold"])) + " and classes {}".format(
+                        predictions.shape[0]) + "are not matching.")
+            else:
+                for idx in range(len(self.config["threshold"])):
+                    predictions[:, idx][predictions[:, idx] >= self.config["threshold"][idx]] = 1
+                    predictions[:, idx][predictions[:, idx] < self.config["threshold"][idx]] = 0
             if self.config["metric"] == "accuracy":
                 return skmetrics.accuracy_score(labels, predictions)
             elif self.config["metric"] == "f1-score":
-                return skmetrics.f1_score(labels, predictions)
+                return skmetrics.f1_score(labels, predictions, average='micro')
             elif self.config["metric"] == "matthews_corrcoef":
                 return skmetrics.matthews_corrcoef(labels, predictions)
             elif self.config["metric"] == "precision":
                 return skmetrics.precision_score(labels, predictions)
+            elif self.config["metric"] == "average_precision_score":
+                return skmetrics.average_precision_score(labels, predictions)
             elif self.config["metric"] == "recall":
                 return skmetrics.recall_score(labels, predictions)
 
@@ -205,7 +216,7 @@ class TrainingManager:
             # Monitor performances on development set
             if idx % self.config["dev_every"] == 0:
                 dev_loss, dev_metric = self.evaluate(dev_loader)
-                self.print_epoch(loss_value=dev_loss, metric_value=dev_metric, set_type="dev", epoch_idx="")
+                self.print_epoch(loss_value=dev_loss, metric_value=dev_metric, set_type="dev")
 
                 if dev_metric > max_metric:
                     print("Saving best model...")
@@ -214,7 +225,7 @@ class TrainingManager:
 
         print("Loading best model for evaluation on test set... ")
         test_loss, test_metric = self.evaluate(test_loader)
-        self.print_epoch(loss_value=test_loss, metric_value=test_metric, set_type="test", epoch_idx="")
+        self.print_epoch(loss_value=test_loss, metric_value=test_metric, set_type="test")
 
     def evaluate(self, data_loader):
         self.model.to(self.device)
