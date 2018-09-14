@@ -132,6 +132,9 @@ class DCASE2013_remixed_data_set(torchdata.Dataset):
             features = np.where(mel_spectrogram > 0, 10.0 * np.log10(mel_spectrogram), mel_spectrogram)
         return np.expand_dims(features, 0)  # introduce a dimension for the 'image' channel
 
+    def features_shape(self):
+        return self.features[0].shape
+
     def to(self, device):
         """
             After this method is called, the data set should only provide batches of tensors on 'device',

@@ -57,10 +57,10 @@ class TrainingManager:
         self.device = torch.device("cpu") if not self.config["use_gpu"] \
             else torch.device("cuda:" + str(self.config["gpu_no"]))
 
-        self.model = md.find_model_class(config["model_type"])(config)
-
         self.train_set, self.dev_set, self.test_set = \
             dts.find_data_set_class(self.config["data_set_type"]).split(self.config)
+
+        self.model = md.find_model_class(config["model_type"])(config, self.train_set.features_shape())
 
         # Optimizer
         if self.config["optimizer"] == "Adam":
@@ -95,6 +95,8 @@ class TrainingManager:
         # Loss function
         if self.config["loss_f"] == "BCE":
             self.loss_f = torch.nn.BCELoss()
+        elif self.config["loss_f"] == "MultiLabelSoftMarginLoss":
+            self.loss_f = torch.nn.MultiLabelSoftMarginLoss()
         else:
             raise NotImplementedError("Loss function " + self.config["loss_f"] + " is not available.")
 

@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as func
 
@@ -33,15 +34,16 @@ class VGG_like_CNN(nn.Module):
             "s_t": [1, 1, 1, 1, 1, 1],  # stride of each convolution along the time axis
             "p_f": [0, 0, 0, 0, 0, 0],  # padding before each convolution along the frequency axis
             "p_t": [0, 0, 0, 0, 0, 0],  # padding before each convolution along the time axis
+            "groups": [1, 1, 1, 1, 1, 1],  # groups parameter for each conv layer.
             "drop_out_probs": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # drop out probability during training for each bloc
 
             "use_batch_norm": True,  # If true, each bloc contains a batch normalization layer after the convolution
 
-            "classification_mapping": "GMP"  # The classification mapping to use: {"GMP", "GAP", "GWRP"}
+            "classification_mapping": "GAP"  # The classification mapping to use: {"GMP", "GAP", "GWRP"}
         }
         return config
 
-    def __init__(self, config):
+    def __init__(self, config, input_shape):
         super(VGG_like_CNN, self).__init__()
 
         self.n_blocs = len(config["i_c"])
@@ -55,11 +57,25 @@ class VGG_like_CNN(nn.Module):
         if self.use_batch_norm:
             self.batch_norms = nn.ModuleList([nn.BatchNorm2d(config["o_c"][i]) for i in range(self.n_blocs)])
 
-        self.activations = nn.ModuleList([nn.LeakyReLU() for _ in range(self.n_blocs - 1)] + [nn.Sigmoid()])
+        self.activations = nn.ModuleList([nn.LeakyReLU(0.5) for _ in range(self.n_blocs - 1)] + [nn.Sigmoid()])
 
         self.dropouts = nn.ModuleList([nn.Dropout(config["drop_out_probs"][i]) for i in range(self.n_blocs)])
 
-        self.c_map = config["classification_mapping"]
+        # Run a variable through the network to get the shape of the input to the classification mapping
+        example_input = torch.zeros((1, input_shape[0], input_shape[1], input_shape[2]))  # add batch dimension
+        for idx in range(self.n_blocs):
+            example_input = self.convolutions[idx](example_input)
+            if self.use_batch_norm:
+                example_input = self.batch_norms[idx](example_input)
+            example_input = self.dropouts[idx](example_input)
+            example_input = self.activations[idx](example_input)
+
+        if config["classification_mapping"] == "GMP":
+            self.c_map = nn.MaxPool2d((example_input.shape[-2], example_input.shape[-1]))
+        elif config["classification_mapping"] == "GAP":
+            self.c_map = nn.AvgPool2d((example_input.shape[-2], example_input.shape[-1]))
+        elif config["classification_mapping"] == "GWRP":
+            raise NotImplementedError("TODO !")
 
     def forward(self, x):
         for idx in range(self.n_blocs):
@@ -68,12 +84,7 @@ class VGG_like_CNN(nn.Module):
                 x = self.batch_norms[idx](x)
             x = self.dropouts[idx](x)  # Dropout before activation (for sigmoid) because it rescales with 1/p
             x = self.activations[idx](x)
-        masks = x.detach().cpu().numpy()
-        if self.c_map == "GMP":
-            x = func.max_pool2d(x, (x.shape[2], x.shape[3])).squeeze()  # x.shape: (B, C, F, T)
-        elif self.c_map == "GAP":
-            x = func.avg_pool2d(x, (x.shape[2], x.shape[3])).squeeze()
-        elif self.c_map == "GWRP":
-            raise NotImplementedError("Coming up !")
 
+        masks = x.detach().cpu().numpy()
+        x = self.c_map(x).squeeze()  # squeeze to remove reduced dimensions
         return x, masks
