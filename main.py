@@ -3,17 +3,24 @@ import argparse
 import data_set as ds
 import model as mod
 import train as tr
+import separator as sep
 from helpers import str2bool
+
+MODES = ["train", "evaluate", "separate"]
 
 
 def main(config):
-    filename = config["checkpoint_path"]
-    if filename:
-        config["checkpoint_path"] = ""
-        tr_manager = tr.TrainingManager.load_state(filename, config)
-    else:
-        tr_manager = tr.TrainingManager(config)
-    tr_manager.train()
+    if config["mode"] == "train":
+        filename = config["checkpoint_path"]
+        if filename:
+            config["checkpoint_path"] = ""
+            tr_manager = tr.TrainingManager.load_state(filename, config)
+        else:
+            tr_manager = tr.TrainingManager(config)
+        tr_manager.train()
+    elif config["mode"] == "separate":
+        seperator = sep.AudioSeparator.from_checkpoint(config)
+        seperator.separate()
 
 
 def parse_arguments():
@@ -31,16 +38,27 @@ def parse_arguments():
                                                  "Passed arguments update the default values in the default_config "
                                                  "dictionarries.\n"
                                                  "See README.md for more information")
-    parser.add_argument("-m", "--model_type", type=str, required=True,
-                        help="Identifier for the class of the model to train. See 'find_model_class' in model.py")
-    parser.add_argument("-d", "--data_set_type", type=str, required=True,
-                        help="Identifier of the class of the data set to use. See 'find_data_set_class' in data_set.py")
-    args = vars(parser.parse_known_args()[0])
-    data_set_default_config = ds.find_data_set_class(args["data_set_type"]).default_config()
-    model_default_config = mod.find_model_class(args["model_type"]).default_config()
-    training_default_config = tr.TrainingManager.default_config()
-    # merge the default dictionaries
-    default_config = {**data_set_default_config, **model_default_config, **training_default_config}
+    parser.add_argument("--mode", type=str, required=True,
+                        help="Which mode of the script to execute: train for training a model, evaluate for evaluating "
+                             "a model, and separate to generate source separated audio files")
+    mode_arg = vars(parser.parse_known_args()[0])
+
+    if mode_arg["mode"] == "train" or mode_arg["mode"] == "evaluate":
+        parser.add_argument("-m", "--model_type", type=str, required=True,
+                            help="Identifier for the class of the model. See 'find_model_class' in model.py")
+        parser.add_argument("-d", "--data_set_type", type=str, required=True,
+                            help="Identifier of the class of the data set. See 'find_data_set_class' in data_set.py")
+        args = vars(parser.parse_known_args()[0])
+        data_set_default_config = ds.find_data_set_class(args["data_set_type"]).default_config()
+        model_default_config = mod.find_model_class(args["model_type"]).default_config()
+        training_default_config = tr.TrainingManager.default_config()
+        # merge the default dictionaries
+        default_config = {**data_set_default_config, **model_default_config, **training_default_config}
+
+    elif mode_arg["mode"] == "separate":
+        default_config = sep.AudioSeparator.default_config()
+    else:
+        raise NotImplementedError("Mode " + mode_arg["mode"] + " is not Implemented")
 
     full_parser = argparse.ArgumentParser(allow_abbrev=False)
     # Add all default values as potential arguments
@@ -54,6 +72,7 @@ def parse_arguments():
             full_parser.add_argument(key, default=value, type=type(value))
 
     parsed_args = vars(full_parser.parse_known_args()[0])
+    parsed_args.update(mode_arg)
     if parsed_args["checkpoint_path"]:
         # Return only the values explicitly passed by user. Other values should be loaded from checkpoint
         new_args = {key: value for key, value in parsed_args.items() if value != default_config[key]}
