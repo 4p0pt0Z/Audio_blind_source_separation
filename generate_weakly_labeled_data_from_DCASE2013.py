@@ -107,7 +107,7 @@ def main():
                         help="Maximal number of audio event per mixed file.")
     parser.add_argument("-o", "--overlap", type=str2bool, default=False,
                         help="Controls if the audio events can overlap in the generated mixed files. Default: False.")
-    parser.add_argument("-r", "--white_noise_ratio", type=float, default=0.001,
+    parser.add_argument("-r", "--white_noise_ratio", type=float, default=0.1,
                         help="Ratio between the energy of the clean mixed audio, "
                              "and the energy of the white noise to apply as background")
     parser.add_argument("-sr", "--sampling_rate", type=int, default=16000,
