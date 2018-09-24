@@ -19,8 +19,8 @@ class TrainingManager:
             "model_type": "",  # Identifier to pass to the md.find_model_class function to get the class of the model.
 
             "data_set_type": "",  # Identifier to pass to the dts.find_dataset_class to get the class of the data sets.
-            "batch_size": 0,
-            "n_loaders": 0,
+            "batch_size": 64,
+            "n_loaders": 0,  # 0 means loading happens in the same thread as the main thread
 
             "use_gpu": True,
             "gpu_no": 0,
@@ -178,6 +178,12 @@ class TrainingManager:
         self.train_set.to(self.device)
         self.dev_set.to(self.device)
         self.test_set.to(self.device)
+        # shift features to 0 mean and 1 unit variance
+        shift, scaling = self.train_set.compute_shift_and_scaling()
+        self.config["shift"], self.config["scaling"] = shift, scaling
+        self.train_set.shift_and_scale(shift, scaling)
+        self.dev_set.shift_and_scale(shift, scaling)
+        self.test_set.shift_and_scale(shift, scaling)
 
         train_loader = torch.utils.data.DataLoader(self.train_set, batch_size=self.config["batch_size"], shuffle=True,
                                                    num_workers=self.config["n_loaders"])
