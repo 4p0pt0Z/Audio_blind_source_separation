@@ -28,7 +28,7 @@ This can be done with the script `generate_weakly_labeled_data_from_DCASE2013.py
 | length | ]0.0, inf) | 10 | Length (in seconds) of the audio mix to generate. The length of a mix should be bigger than the length of individual components. |
 | max_event | [1, inf) | 4 | Maximal number of audio events to include in a mix |
 | overlap | {True, true, 1, False, false, 0}| False | Control if the events can overlap in the mix, or should be separated |
-| white_noise_ratio | [0.0, 1.0] | 0.05 | Ratio between the mix mean value and the added white noise mean value |
+| white_noise_ratio | [0.0, 1.0] | 0.05 | Ratio between energy of audio events in the mix and background white noise |
 | sampling_rate |  {8000, 16000, 44100} | 16000 | The sampling rate to use for the mix audio format |
 | n_files | [1, inf] | 2000 | Number of mix to generate |
 | DCASE_2013_stereo_data_folder | str |  | Path to the DCASE2013 sound event detection (subtask 2) dataset |
