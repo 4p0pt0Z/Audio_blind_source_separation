@@ -11,7 +11,9 @@ Master thesis Fall 2018: Neural Network based Audio Blind source Separation for 
 * scikit-learn
 * librosa (installed with pip)
 * pandas
-* jupyter lab
+* jupyter lab (visualization)
+* seaborn (visualization)
+* scikit-image
 
 ### Replicate Blind Source Segmentation on weakly labelled data paper
 The first step of this work is to build a framework for audio blind source separation (ABSS) working on weakly labelled data, inspired from the results described in the paper [Sound Event Detection and Time-Frequency Segmentation from Weakly Labeled Data](https://arxiv.org/abs/1804.04715).
@@ -44,3 +46,21 @@ To train with these classes, you must pass their identifier to the main script. 
 The rest of the available command line arguments are any parameters appearing in the `default_config` method of the classes that have been selected.
 
 TODO: describe the arguments.
+
+Training can be launched with a command similar to :  
+`python -m main --mode train \ `  
+`--model_type VGG_like_CNN \ `  
+`--drop_out_probs 0.3 0.4 0.5 0.5 0.5 0.0 \ `  
+`--classification_mapping GWRP \ `  
+`--data_set_type DCASE2013_remixed_data_set \  ` 
+`--data_folder Datadir/remixed_DCASE2013_2k  \ `  
+`--loss_f BCE \ `  
+`--scale_transform True \ `   
+`--use_batch_norm True \ `  
+`--n_epochs 500 \ `  
+`--scheduler_type multiStepLR --scheduler_gamma 1.0 --scheduler_milestones 150 300 \ `   
+`--dev_every 5 \ `  
+`--learning_rate 0.0001 \ `    
+`--weight_decay 0.0 \ `   
+`--metric f1-score \ `   
+`--save_path results/models/test1.ckpt`  
