@@ -9,16 +9,20 @@ from helpers import str2bool
 MODES = ["train", "evaluate", "separate"]
 
 
-def main(config):
-    if config["mode"] == "train":
+def main(exec_mode, config):
+    if exec_mode == "train":
         filename = config["checkpoint_path"]
         if filename:
             config["checkpoint_path"] = ""
-            tr_manager = tr.TrainingManager.load_state(filename, config)
+            tr_manager = tr.TrainingManager.from_checkpoint(filename, config)
         else:
             tr_manager = tr.TrainingManager(config)
         tr_manager.train()
-    elif config["mode"] == "separate":
+    elif exec_mode == "evaluate":
+        tr_manager = tr.TrainingManager.from_checkpoint(config["checkpoint_path"], config)
+        test_loss, test_metric = tr_manager.evaluate(tr_manager.test_set)
+        tr_manager.print_epoch(loss_value=test_loss, metric_value=test_metric, set_type="test")
+    elif exec_mode == "separate":
         seperator = sep.AudioSeparator.from_checkpoint(config)
         seperator.separate()
 
@@ -42,8 +46,9 @@ def parse_arguments():
                         help="Which mode of the script to execute: train for training a model, evaluate for evaluating "
                              "a model, and separate to generate source separated audio files")
     mode_arg = vars(parser.parse_known_args()[0])
+    exec_mode = mode_arg.pop("mode")
 
-    if mode_arg["mode"] == "train" or mode_arg["mode"] == "evaluate":
+    if exec_mode == "train" or exec_mode == "evaluate":
         parser.add_argument("-m", "--model_type", type=str, required=True,
                             help="Identifier for the class of the model. See 'find_model_class' in model.py")
         parser.add_argument("-d", "--data_set_type", type=str, required=True,
@@ -55,10 +60,10 @@ def parse_arguments():
         # merge the default dictionaries
         default_config = {**data_set_default_config, **model_default_config, **training_default_config}
 
-    elif mode_arg["mode"] == "separate":
+    elif exec_mode == "separate":
         default_config = sep.AudioSeparator.default_config()
     else:
-        raise NotImplementedError("Mode " + mode_arg["mode"] + " is not Implemented")
+        raise NotImplementedError("Mode " + exec_mode + " is not Implemented")
 
     full_parser = argparse.ArgumentParser(allow_abbrev=False)
     # Add all default values as potential arguments
@@ -76,13 +81,13 @@ def parse_arguments():
     if parsed_args["checkpoint_path"]:
         # Return only the values explicitly passed by user. Other values should be loaded from checkpoint
         new_args = {key: value for key, value in parsed_args.items() if value != default_config[key]}
-        return new_args
+        return exec_mode, new_args
     else:
         # update the values in config with the passed arguments or the default arguments
         default_config.update(parsed_args)
-        return default_config
+        return exec_mode, default_config
 
 
 if __name__ == '__main__':
-    conf_dict = parse_arguments()
-    main(conf_dict)
+    exec_mode, conf_dict = parse_arguments()
+    main(exec_mode, conf_dict)
