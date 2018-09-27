@@ -46,6 +46,19 @@ class GlobalWeightedRankPooling(nn.Module):
         return y
 
 
+class GlobalPoolingToProbabilityWrapper(nn.Module):
+    def __init__(self, pooling):
+        super(GlobalPoolingToProbabilityWrapper, self).__init__()
+        self.pooling = pooling
+        self.linear = nn.Linear(1, 1, bias=True)  # Serves to re-scale the output of the Global pooling
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        x = self.pooling(x)
+        x = self.sigmoid(self.linear(x.squeeze()))
+        return x
+
+
 class VGG_like_CNN(nn.Module):
     """
 
@@ -63,6 +76,7 @@ class VGG_like_CNN(nn.Module):
             "p_f": [0, 0, 0, 0, 0, 0],  # padding before each convolution along the frequency axis
             "p_t": [0, 0, 0, 0, 0, 0],  # padding before each convolution along the time axis
             "groups": [1, 1, 1, 1, 1, 1],  # groups parameter for each conv layer.
+            "drop_out_type": "1D",  # Whether to apply 1D dropout, or 2D (zero entire channels, cf pytorch doc)
             "drop_out_probs": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # drop out probability during training for each bloc
 
             "leaky_relu_slope": 0.01,
@@ -70,7 +84,9 @@ class VGG_like_CNN(nn.Module):
             "use_batch_norm": True,  # If true, batch normalization is used between the convolutions and activations
 
             "classification_mapping": "GAP",  # The classification mapping to use: {"GMP", "GAP", "GWRP"}
-            "dc": 0.5  # hyper-parameter for global weighted pooling
+            "dc": 0.5,  # hyper-parameter for global weighted pooling
+
+            "c_map_transform": True
         }
         return config
 
@@ -94,7 +110,10 @@ class VGG_like_CNN(nn.Module):
         self.activations = nn.ModuleList([nn.LeakyReLU(config["leaky_relu_slope"])
                                           for _ in range(self.n_blocs - 1)] + [nn.Sigmoid()])
 
-        self.dropouts = nn.ModuleList([nn.Dropout2d(config["drop_out_probs"][i]) for i in range(self.n_blocs)])
+        if config["drop_out_type"] == "1D":
+            self.dropouts = nn.ModuleList([nn.Dropout(config["drop_out_probs"][i]) for i in range(self.n_blocs)])
+        elif config["drop_out_type"] == "2D":
+            self.dropouts = nn.ModuleList([nn.Dropout2d(config["drop_out_probs"][i]) for i in range(self.n_blocs)])
 
         # Run a variable through the convolutions to get the shape of the input to the classification mapping
         example_input = torch.zeros((1, input_shape[0], input_shape[1], input_shape[2]))  # add batch dimension
@@ -119,6 +138,9 @@ class VGG_like_CNN(nn.Module):
                                        nn.Sigmoid())
             self.reshape = True
 
+        if config["c_map_transform"]:
+            self.cmap = GlobalPoolingToProbabilityWrapper(self.c_map)
+
     def forward(self, x):
         for idx in range(self.n_blocs):
             x = self.convolutions[idx](x)
@@ -127,7 +149,7 @@ class VGG_like_CNN(nn.Module):
             x = self.dropouts[idx](x)  # Dropout before activation (for sigmoid) because it rescales with 1/p
             x = self.activations[idx](x)
 
-        masks = x.detach().cpu().numpy()
+        masks = x.detach()
         if self.reshape:
             x = x.view(x.shape[0], x.shape[1], -1)
         x = self.c_map(x).squeeze()  # squeeze to remove reduced dimensions
