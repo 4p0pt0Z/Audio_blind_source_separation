@@ -13,6 +13,7 @@ Master thesis Fall 2018: Neural Network based Audio Blind source Separation for 
 * pandas
 * jupyter lab (visualization)
 * seaborn (visualization)
+* node-js (vizualization) and extension for jupyter lab [here](https://github.com/matplotlib/jupyter-matplotlib)
 * scikit-image
 
 ### Replicate Blind Source Segmentation on weakly labelled data paper
