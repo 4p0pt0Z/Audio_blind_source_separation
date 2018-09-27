@@ -54,6 +54,8 @@ class DCASE2013_remixed_data_set(torchdata.Dataset):
             "data_folder": "Datadir/remixed_DCASE2013",  # to this will be appended the set folder (train-dev-val)
 
             "thread_max_worker": 3,
+
+            "scaling_type": "standardization"  # type of feature normalization: "min-max scaling", "standardization"
         }
         return config
 
@@ -177,16 +179,25 @@ class DCASE2013_remixed_data_set(torchdata.Dataset):
 
     def compute_shift_and_scaling(self):
         n_channels = self.features.shape[1]
-        channel_means = [np.nan] * n_channels
-        channel_std = [np.nan] * n_channels
-        for i in range(self.features.shape[1]):  # average per-channel
-            channel_means[i] = self.features[:, i, :, :].mean()
-            channel_std[i] = self.features[:, i, :, :].std()
-        return channel_means, channel_std
+        channel_shift = [np.nan] * n_channels
+        channel_scaling = [np.nan] * n_channels
+        for i in range(self.features.shape[1]):
+            if self.config["scaling_type"] == "standardization":
+                channel_shift[i] = self.features[:, i, :, :].mean()
+                channel_scaling[i] = self.features[:, i, :, :].std()
+            elif self.config["scaling_type"] == "min-max":
+                channel_shift[i] = self.features[:, i, :, :].min()
+                channel_scaling[i] = self.features[:, i, :, :].max() - channel_shift[i]  # max - min
+            elif not self.config["scaling_type"]:
+                print("[WARNING] No normalization procedure is specified !")
+                channel_shift[i] = 0.0
+                channel_scaling[i] = 1.0
 
-    def shift_and_scale(self, center, scaling):
-        for i in range(self.features.shape[1]):  # average per-channel
-            self.features[:, i, :, :] = (self.features[:, i, :, :] - center[i]) / scaling[i]
+        return channel_shift, channel_scaling
+
+    def shift_and_scale(self, shift, scaling):
+        for i in range(self.features.shape[1]):  # per channel
+            self.features[:, i, :, :] = (self.features[:, i, :, :] - shift[i]) / scaling[i]
 
     def __getitem__(self, index):
         return self.features[index], self.labels[index]
