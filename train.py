@@ -26,6 +26,7 @@ class TrainingManager:
             "gpu_no": 0,
 
             "metric": "",  # Accuracy, F-score, MCC, etc... See available in 'compute_metric'
+            "average": "weighted",  # Average argument of the sklearn metrics: how to aggregate results across classes
             "threshold": [0.5],  # If required by the metric. Either 1 threshold common to all classes or a list
 
             "loss_f": "",  # Loss function to use: BCE, multilabelSoftMarginLoss, etc ... (see 'init')
@@ -100,14 +101,33 @@ class TrainingManager:
         else:
             raise NotImplementedError("Loss function " + self.config["loss_f"] + " is not available.")
 
+        # list storing loss function and metric values for each epoch
+        self.train_losses, self.dev_losses, self.test_losses = [], [], []
+        self.train_metrics, self.dev_metrics, self.test_metrics = [], [], []
+
     def save_state(self):
         state = {"model_state_dict": self.model.state_dict(),
                  "optimizer_state_dict": self.optimizer.state_dict(),
-                 "config": self.config}
+                 "config": self.config,
+                 "train_losses": self.train_losses, "train_metrics": self.train_metrics,
+                 "dev_losses": self.dev_losses, "dev_metrics": self.dev_metrics,
+                 "test_losses": self.test_losses, "test_metrics": self.test_losses}
+        torch.save(state, self.config["save_path"])
+
+    def save_metrics_and_losses(self):
+        try:
+            state = torch.load(self.config["save_path"])
+        except FileNotFoundError:
+            print("Could not find saved model, saving metrics and losses ...")
+            state = {}
+        state["train_losses"], state["dev_losses"], state["test_losses"] = \
+            self.train_losses, self.dev_losses, self.test_losses
+        state["train_metrics"], state["dev_metrics"], state["test_metrics"] = \
+            self.train_metrics, self.dev_metrics, self.test_metrics
         torch.save(state, self.config["save_path"])
 
     @classmethod
-    def load_state(cls, filename, config_update=None):
+    def from_checkpoint(cls, filename, config_update=None):
         if not os.path.isfile(filename):
             raise ValueError("File " + filename + " is not a valid file.")
         print("Loading from checkpoint '{}'".format(filename))
@@ -116,6 +136,10 @@ class TrainingManager:
         if config_update is not None:  # Update dict if we have updated parameters
             state["config"].update(config_update)
         manager = cls(state["config"])
+        manager.train_losses, manager.dev_losses, manager.test_losses = \
+            state["train_losses"], state["dev_losses"], state["test_losses"]
+        manager.train_metrics, manager.dev_metrics, manager.test_metrics = \
+            state["train_metrics"], state["dev_metrics"], state["test_metrics"]
         manager.model.load_state_dict(state["model_state_dict"])
         manager.optimizer.load_state_dict(state["optimizer_state_dict"])
         manager.model.to(manager.device)
@@ -135,8 +159,9 @@ class TrainingManager:
         Returns:
 
         """
+        average = self.config["average"] if self.config["average"].lower() != "none" else None
         if self.config["metric"] == "roc_auc_score":
-            return skmetrics.roc_auc_score(labels, predictions)
+            return skmetrics.roc_auc_score(labels, predictions, average=average)
         else:
             # Apply threshold:
             if len(self.config["threshold"]) == 1:
@@ -153,19 +178,26 @@ class TrainingManager:
             if self.config["metric"] == "accuracy":
                 return skmetrics.accuracy_score(labels, predictions)
             elif self.config["metric"] == "f1-score":
-                return skmetrics.f1_score(labels, predictions, average='micro')
+                return skmetrics.f1_score(labels, predictions, average=average)
             elif self.config["metric"] == "matthews_corrcoef":
                 return skmetrics.matthews_corrcoef(labels, predictions)
             elif self.config["metric"] == "precision":
-                return skmetrics.precision_score(labels, predictions)
+                return skmetrics.precision_score(labels, predictions, average=average)
             elif self.config["metric"] == "average_precision_score":
-                return skmetrics.average_precision_score(labels, predictions)
+                return skmetrics.average_precision_score(labels, predictions, average=average)
             elif self.config["metric"] == "recall":
-                return skmetrics.recall_score(labels, predictions)
+                return skmetrics.recall_score(labels, predictions, average=average)
 
     def print_epoch(self, loss_value, metric_value, set_type, epoch_idx="\b"):
         print("Epoch {} on {} set - ".format(epoch_idx, set_type) + self.config["loss_f"]
-              + " loss: {:.4f} - ".format(loss_value) + self.config["metric"] + ": {:.4f}".format(metric_value))
+              + " loss: {:.4f} - ".format(loss_value), end='')
+        if self.config["average"] != "None":
+            print(self.config["average"] + " ")
+        print(self.config["metric"] + ": ", end='')
+        if isinstance(metric_value, np.ndarray):
+            print(["{:.4f}".format(value) for value in metric_value])
+        else:
+            print(": {:.4f}".format(metric_value))
 
     def train(self):
         """
@@ -187,10 +219,6 @@ class TrainingManager:
 
         train_loader = torch.utils.data.DataLoader(self.train_set, batch_size=self.config["batch_size"], shuffle=True,
                                                    num_workers=self.config["n_loaders"])
-        dev_loader = torch.utils.data.DataLoader(self.dev_set, batch_size=self.config["batch_size"], shuffle=True,
-                                                 num_workers=self.config["n_loaders"])
-        test_loader = torch.utils.data.DataLoader(self.test_set, batch_size=self.config["batch_size"], shuffle=True,
-                                                  num_workers=self.config["n_loaders"])
 
         max_metric = -np.inf
 
@@ -218,25 +246,35 @@ class TrainingManager:
 
             all_predictions = np.concatenate(all_predictions, axis=0)
             all_labels = np.concatenate(all_labels, axis=0)
-            self.print_epoch(loss_value=np.mean(losses), metric_value=self.compute_metric(all_labels, all_predictions),
+            self.train_losses.append(np.mean(losses))
+            self.train_metrics.append(self.compute_metric(all_labels, all_predictions))
+            self.print_epoch(loss_value=self.train_losses[-1], metric_value=self.train_metrics[-1],
                              set_type="train", epoch_idx=self.config["epoch_idx"])
 
             # Monitor performances on development set
             if idx % self.config["dev_every"] == 0:
-                dev_loss, dev_metric = self.evaluate(dev_loader)
+                dev_loss, dev_metric = self.evaluate(self.dev_set)
+                self.dev_losses.append(dev_loss)
+                self.dev_metrics.append(dev_metric)
                 self.print_epoch(loss_value=dev_loss, metric_value=dev_metric, set_type="dev")
 
-                if dev_metric > max_metric:
+                if np.mean(dev_metric) > np.mean(max_metric):  # in case of metrics per class, take mean
                     print("Saving best model...")
                     self.save_state()
                     max_metric = dev_metric
 
         print("Loading best model for evaluation on test set... ")
-        test_loss, test_metric = self.evaluate(test_loader)
+        test_loss, test_metric = self.evaluate(self.test_set)
+        self.test_losses.append(test_loss)
+        self.test_metrics.append(test_metric)
         self.print_epoch(loss_value=test_loss, metric_value=test_metric, set_type="test")
 
-    def evaluate(self, data_loader):
+        self.save_metrics_and_losses()
+
+    def evaluate(self, data_set):
         self.model.to(self.device)
+        data_loader = torch.utils.data.DataLoader(data_set, batch_size=self.config["batch_size"], shuffle=True,
+                                                  num_workers=self.config["n_loaders"])
         data_loader.dataset.to(self.device)
         all_predictions = []
         all_labels = []
