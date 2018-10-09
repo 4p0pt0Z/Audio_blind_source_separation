@@ -15,6 +15,7 @@ Master thesis Fall 2018: Neural Network based Audio Blind source Separation for 
 * seaborn (visualization)
 * node-js (vizualization) and extension for jupyter lab [here](https://github.com/matplotlib/jupyter-matplotlib)
 * scikit-image
+* h5py
 
 ### Replicate Blind Source Segmentation on weakly labelled data paper
 The first step of this work is to build a framework for audio blind source separation (ABSS) working on weakly labelled data, inspired from the results described in the paper [Sound Event Detection and Time-Frequency Segmentation from Weakly Labeled Data](https://arxiv.org/abs/1804.04715).
