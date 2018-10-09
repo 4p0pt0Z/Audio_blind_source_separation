@@ -269,7 +269,8 @@ class TrainingManager:
 
         print("Loading best model for evaluation on test set... ")
         state = torch.load(self.config["save_path"])
-        self.model.load_state_dict(state["model_state_dict"]).to(self.device)
+        self.model.load_state_dict(state["model_state_dict"])
+        self.model.to(self.device)
         test_loss, test_metric = self.evaluate(self.test_set)
         self.test_losses.append(test_loss)
         self.test_metrics.append(test_metric)
