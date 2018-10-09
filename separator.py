@@ -4,7 +4,7 @@ import scipy
 
 from skimage.transform import resize
 
-import model as md
+import segmentation_model as md
 import data_set as dts
 
 import os
@@ -48,8 +48,9 @@ class AudioSeparator:
         train_config.update(config)
 
         test_set = dts.find_data_set_class(train_config["data_set_type"]).split(train_config, which_data_set)
+        test_set.shift_and_scale(state["config"]["shift"], state["config"]["scaling"])
 
-        model = md.find_model_class(train_config["model_type"])(train_config, test_set.features_shape())
+        model = md.SegmentationModel(train_config, test_set.features_shape(), test_set.n_classes())
         model.load_state_dict(state["model_state_dict"])
 
         return cls(test_set, model, train_config)

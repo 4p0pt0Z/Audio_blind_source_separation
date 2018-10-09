@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import sklearn.metrics as skmetrics
 
-import model as md
+import segmentation_model as md
 import data_set as dts
 
 import os
@@ -19,7 +19,7 @@ class TrainingManager:
             "model_type": "",  # Identifier to pass to the md.find_model_class function to get the class of the model.
 
             "data_set_type": "",  # Identifier to pass to the dts.find_dataset_class to get the class of the data sets.
-            "batch_size": 64,
+            "batch_size": 32,
             "n_loaders": 0,  # 0 means loading happens in the same thread as the main thread
 
             "use_gpu": True,
@@ -29,7 +29,7 @@ class TrainingManager:
             "average": "weighted",  # Average argument of the sklearn metrics: how to aggregate results across classes
             "threshold": [0.5],  # If required by the metric. Either 1 threshold common to all classes or a list
 
-            "loss_f": "",  # Loss function to use: BCE, multilabelSoftMarginLoss, etc ... (see 'init')
+            "loss_f": "BCE",  # Loss function to use: BCE, multilabelSoftMarginLoss, etc ... (see 'init')
 
             # Optimizer parameters
             "optimizer": "Adam",
@@ -61,7 +61,9 @@ class TrainingManager:
         self.train_set, self.dev_set, self.test_set = \
             dts.find_data_set_class(self.config["data_set_type"]).split(self.config)
 
-        self.model = md.find_model_class(config["model_type"])(config, self.train_set.features_shape())
+        self.shift_scale_data_sets()
+
+        self.model = md.SegmentationModel(config, self.train_set.features_shape(), self.train_set.n_classes())
 
         # Optimizer
         if self.config["optimizer"] == "Adam":
@@ -149,6 +151,16 @@ class TrainingManager:
                     state[k] = v.to(manager.device)
         return manager
 
+    def shift_scale_data_sets(self):
+        """
+            Shift and scale the features of all sets with parameters computed on the training set
+        """
+        shift, scaling = self.train_set.compute_shift_and_scaling()
+        self.config["shift"], self.config["scaling"] = shift, scaling
+        self.train_set.shift_and_scale(shift, scaling)
+        self.dev_set.shift_and_scale(shift, scaling)
+        self.test_set.shift_and_scale(shift, scaling)
+
     def compute_metric(self, labels, predictions):
         """
 
@@ -192,7 +204,7 @@ class TrainingManager:
         print("Epoch {} on {} set - ".format(epoch_idx, set_type) + self.config["loss_f"]
               + " loss: {:.4f} - ".format(loss_value), end='')
         if self.config["average"] != "None":
-            print(self.config["average"] + " ")
+            print(self.config["average"] + " ", end='')
         print(self.config["metric"] + ": ", end='')
         if isinstance(metric_value, np.ndarray):
             print(["{:.4f}".format(value) for value in metric_value])
@@ -208,14 +220,6 @@ class TrainingManager:
         # Move stuff to where it should be and make sure that the returned batches are on 'self.device'
         self.model.to(self.device)
         self.train_set.to(self.device)
-        self.dev_set.to(self.device)
-        self.test_set.to(self.device)
-        # shift features to 0 mean and 1 unit variance
-        shift, scaling = self.train_set.compute_shift_and_scaling()
-        self.config["shift"], self.config["scaling"] = shift, scaling
-        self.train_set.shift_and_scale(shift, scaling)
-        self.dev_set.shift_and_scale(shift, scaling)
-        self.test_set.shift_and_scale(shift, scaling)
 
         train_loader = torch.utils.data.DataLoader(self.train_set, batch_size=self.config["batch_size"], shuffle=True,
                                                    num_workers=self.config["n_loaders"])
@@ -264,6 +268,8 @@ class TrainingManager:
                     max_metric = dev_metric
 
         print("Loading best model for evaluation on test set... ")
+        state = torch.load(self.config["save_path"])
+        self.model.load_state_dict(state["model_state_dict"]).to(self.device)
         test_loss, test_metric = self.evaluate(self.test_set)
         self.test_losses.append(test_loss)
         self.test_metrics.append(test_metric)
