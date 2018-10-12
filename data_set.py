@@ -116,7 +116,7 @@ class AudioDataSet(torchdata.Dataset):
                                        boundary=None,
                                        padded=False)
         magnitude = np.abs(stft)
-        phase = stft / magnitude
+        phase = stft / (magnitude + 1e-15)
         return magnitude, phase
 
     def istft(self, ftst):
@@ -160,6 +160,8 @@ class DCASE2013RemixedDataSet(AudioDataSet):
 
             # Path to the mix files folder (also include the label file) (needed if building from audio files)
             "data_folder": "Datadir/remixed_DCASE2013",  # to this will be appended the set folder (train-dev-val)
+
+            "wanted_events": ['all'],
 
             "data_set_save_folder_path": "",
             "data_set_load_folder_path": "",  # (needed if building from a pre-saved data set)
@@ -214,7 +216,7 @@ class DCASE2013RemixedDataSet(AudioDataSet):
 
         try:
             self.magnitudes, self.phases, self.features, self.labels, self.classes, self.filenames = \
-                    self.build_from_file()
+                self.build_from_file()
         except ValueError as e:
             print(e)
             print("Building data set from audio files !")
@@ -234,9 +236,17 @@ class DCASE2013RemixedDataSet(AudioDataSet):
         features = torch.Tensor([np.expand_dims(self.stft_magnitude_to_features(stft), 0)
                                  for stft in magnitudes])
 
-        labels = torch.from_numpy(files_df.drop("filename", axis=1).values.astype(np.float32))
-        classes = list(files_df.columns)
-        classes.remove("filename")
+        if self.config["wanted_events"] == ["all"]:
+            labels = torch.from_numpy(files_df.drop("filename", axis=1).values.astype(np.float32))
+            classes = list(files_df.columns)
+            classes.remove("filename")
+        else:
+            wanted_events_labels = files_df[self.config["wanted_events"]].copy()
+            wanted_events_labels.loc[:, "noise"] = files_df.loc[:, [event for event in files_df.columns
+                                                                    if event not in self.config["wanted_events"]]].drop(
+                'filename', axis=1).sum(axis=1).clip(lower=0, upper=1)
+            labels = torch.from_numpy(wanted_events_labels.values.astype(np.float32))
+            classes = self.config['wanted_events'] + ['noise']
         filenames = files_df["filename"].tolist()
         return magnitudes, phases, features, labels, classes, filenames
 
@@ -360,7 +370,7 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=config["thread_max_worker"]) as executor:
             audios = executor.map(lambda file: self.load_audio(os.path.join(self.config["audio_folder"], file)),
-                                  [file.decode() for file in self.filenames if file.endswith(b'.mix_0db.wav')])
+                                  [file.decode() for file in self.filenames])
         self.magnitudes, self.phases = tuple(map(lambda x: np.asarray(list(x)),
                                                  zip(*[self.separated_stft(audio) for audio in audios])))
         self.classes = ['babycry', 'glassbreak', 'gunshot', 'background']
