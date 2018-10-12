@@ -93,6 +93,7 @@ def parse_arguments():
 
     parsed_args = vars(full_parser.parse_known_args()[0])
     parsed_args.update(initial_args)
+    default_config.update(initial_args)
     if parsed_args["checkpoint_path"]:
         # Return only the values explicitly passed by user. Other values should be loaded from checkpoint
         new_args = {key: value for key, value in parsed_args.items() if value != default_config[key]}
