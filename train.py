@@ -161,17 +161,19 @@ class TrainingManager:
         self.dev_set.shift_and_scale(shift, scaling)
         self.test_set.shift_and_scale(shift, scaling)
 
-    def compute_metric(self, labels, predictions):
+    def compute_metric(self, labels, predictions, average=None):
         """
 
         Args:
             predictions ():
             labels ():
+            average ():
 
         Returns:
 
         """
-        average = self.config["average"] if self.config["average"].lower() != "none" else None
+        if average is None:
+            average = self.config["average"] if self.config["average"].lower() != "none" else None
         if self.config["metric"] == "roc_auc_score":
             return skmetrics.roc_auc_score(labels, predictions, average=average)
         else:
@@ -257,12 +259,12 @@ class TrainingManager:
 
             # Monitor performances on development set
             if idx % self.config["dev_every"] == 0:
-                dev_loss, dev_metric = self.evaluate(self.dev_set)
+                dev_loss, dev_metric, weighted_dev_metric = self.evaluate(self.dev_set, special_average='weighted')
                 self.dev_losses.append(dev_loss)
                 self.dev_metrics.append(dev_metric)
                 self.print_epoch(loss_value=dev_loss, metric_value=dev_metric, set_type="dev")
 
-                if np.mean(dev_metric) > np.mean(max_metric):  # in case of metrics per class, take mean
+                if weighted_dev_metric > max_metric:  # in case of metrics per class, take mean
                     print("Saving best model...")
                     self.save_state()
                     max_metric = dev_metric
@@ -278,7 +280,7 @@ class TrainingManager:
 
         self.save_metrics_and_losses()
 
-    def evaluate(self, data_set):
+    def evaluate(self, data_set, special_average=None):
         self.model.to(self.device)
         data_loader = torch.utils.data.DataLoader(data_set, batch_size=self.config["batch_size"], shuffle=True,
                                                   num_workers=self.config["n_loaders"])
@@ -287,13 +289,19 @@ class TrainingManager:
         all_labels = []
         losses = []
         self.model.eval()
-        for (features, labels) in data_loader:
-            predictions, _ = self.model(features)
-            loss = self.loss_f(predictions, labels)
-            losses.append(loss.item())
-            all_predictions.append(predictions.detach().cpu().numpy())
-            all_labels.append(labels.detach().cpu().numpy())
+        with torch.no_grad():
+            for (features, labels) in data_loader:
+                predictions, _ = self.model(features)
+                loss = self.loss_f(predictions, labels)
+                losses.append(loss.item())
+                all_predictions.append(predictions.detach().cpu().numpy())
+                all_labels.append(labels.detach().cpu().numpy())
 
-        all_predictions = np.concatenate(all_predictions, axis=0)
-        all_labels = np.concatenate(all_labels, axis=0)
-        return np.mean(losses), self.compute_metric(all_labels, all_predictions)
+            all_predictions = np.concatenate(all_predictions, axis=0)
+            all_labels = np.concatenate(all_labels, axis=0)
+        if special_average is None:
+            return np.mean(losses), self.compute_metric(all_labels, all_predictions)
+        else:
+            return np.mean(losses),\
+                   self.compute_metric(all_labels, all_predictions),\
+                   self.compute_metric(all_labels, all_predictions, special_average)
