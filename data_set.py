@@ -1,7 +1,6 @@
 import os
 from abc import abstractmethod
 import h5py
-import ast
 
 import concurrent.futures
 
@@ -69,7 +68,7 @@ class AudioDataSet(torchdata.Dataset):
                                                   n_mels=self.config["n_Mel_filters"],
                                                   fmin=self.config["Mel_min_freq"],
                                                   fmax=self.config["Mel_max_freq"]).astype(np.float32)
-        self.inverse_mel_filterbank = np.linalg.pinv(self.mel_filterbank)  # "inverse" matrix
+        self.inverse_mel_filterbank = np.linalg.pinv(self.mel_filterbank)
 
     @classmethod
     @abstractmethod
@@ -96,14 +95,26 @@ class AudioDataSet(torchdata.Dataset):
     def shift_and_scale(self, shift, scaling):
         pass
 
+    @abstractmethod
+    def un_shift_and_scale(self, shift, scaling):
+        pass
+
+    @abstractmethod
+    def rescale_to_initial(self, features, shift, scaling):
+        pass
+
     def stft_magnitude_to_features(self, magnitude):
         mel_spectrogram = self.mel_filterbank @ magnitude
         if self.config["feature_type"] == "mel":
             return mel_spectrogram
         elif self.config["feature_type"] == "log-mel":
-            with np.errstate(divide='ignore'):  # take only log of positive values, but log is computed for entire array
-                log_mel_spectrogram = np.where(mel_spectrogram > 0, 10.0 * np.log10(mel_spectrogram), mel_spectrogram)
+            log_mel_spectrogram = 10.0 * np.log10(mel_spectrogram + 1.0)  # +1 to make sure log is contracting
             return log_mel_spectrogram
+
+    def features_to_stft_magnitudes(self, features):
+        if self.config["feature_type"] == "log-mel":
+            features = np.power(10.0*np.ones(features.shape), (features/10.0)) - 1.0
+        return self.inverse_mel_filterbank[np.newaxis, np.newaxis, ...] @ features
 
     def separated_stft(self, audio):
         _, _, stft = scipy.signal.stft(audio,
@@ -133,6 +144,10 @@ class AudioDataSet(torchdata.Dataset):
     def load_audio(self, filename):
         audio, _ = librosa.core.load(filename, sr=self.config["sampling_rate"], mono=True)
         return audio
+
+    @abstractmethod
+    def audio_full_filename(self, idx):
+        pass
 
 
 class DCASE2013RemixedDataSet(AudioDataSet):
@@ -318,6 +333,18 @@ class DCASE2013RemixedDataSet(AudioDataSet):
         for i in range(self.features.shape[1]):  # per channel
             self.features[:, i, :, :] = (self.features[:, i, :, :] - shift[i]) / scaling[i]
 
+    def un_shift_and_scale(self, shift, scaling):
+        for i in range(self.features.shape[1]):
+            self.features[:, i, :, :] = (self.features[:, i, :, :] * scaling[i]) + shift[i]
+
+    def rescale_to_initial(self, features, shift, scaling):
+        for i in range(features.shape[1]):
+            features[:, i, :, :] = (features[:, i, :, :] * scaling[i].to(features[:, i, :, :].device)) \
+                                   + shift[i].to(features[:, i, :, :].device)
+
+    def audio_full_filename(self, idx):
+        return os.path.join(self.config["data_folder"], self.filenames[idx])
+
     def __getitem__(self, index):
         return self.features[index], self.labels[index]
 
@@ -364,13 +391,13 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
         self.config = config
 
         with h5py.File(config["data_file"], 'r') as hf:
-            self.filenames = list(hf.get('na_list'))
+            self.filenames = [file.decode() for file in list(hf.get('na_list'))]
             self.features = torch.from_numpy(np.array(hf.get('x'))).unsqueeze(1).permute(0, 1, 3, 2)
             self.labels = torch.from_numpy(np.array(hf.get('y')))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=config["thread_max_worker"]) as executor:
             audios = executor.map(lambda file: self.load_audio(os.path.join(self.config["audio_folder"], file)),
-                                  [file.decode() for file in self.filenames])
+                                  self.filenames)
         self.magnitudes, self.phases = tuple(map(lambda x: np.asarray(list(x)),
                                                  zip(*[self.separated_stft(audio) for audio in audios])))
         self.classes = ['babycry', 'glassbreak', 'gunshot', 'background']
@@ -424,6 +451,21 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
     def shift_and_scale(self, shift, scaling):
         for i in range(self.features.shape[1]):  # per channel
             self.features[:, i, :, :] = (self.features[:, i, :, :] - shift[i]) / scaling[i]
+
+    def un_shift_and_scale(self, shift, scaling):
+        for i in range(self.features.shape[1]):
+            self.features[:, i, :, :] = (self.features[:, i, :, :] * scaling[i]) + shift[i]
+
+    def rescale_to_initial(self, features, shift, scaling):
+        for i in range(features.shape[1]):
+            features[:, i, :, :] = (features[:, i, :, :] * scaling[i].to(features[:, i, :, :].device))\
+                                   + shift[i].to(features[:, i, :, :].device)
+
+    def features_to_stft_magnitudes(self, features):
+        return self.inverse_mel_filterbank[np.newaxis, np.newaxis, ...] @ (np.exp(features) - 1e-8)
+
+    def audio_full_filename(self, filename):
+        return os.path.join(self.config["audio_folder"], filename)
 
     def __getitem__(self, index):
         return self.features[index], self.labels[index]
