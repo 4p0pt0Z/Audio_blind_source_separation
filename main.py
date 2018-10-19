@@ -72,7 +72,7 @@ def parse_arguments():
         parser.add_argument("--checkpoint_path", type=str, required=True,
                             help="Path to the saved model checkpoint.")
         args = vars(parser.parse_known_args()[0])
-        state = torch.load(args["checkpoint_path"])
+        state = torch.load(args["checkpoint_path"], 'cpu')
         default_config = state["config"]
 
     elif exec_mode == "separate":

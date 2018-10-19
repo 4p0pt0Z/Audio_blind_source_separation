@@ -30,10 +30,11 @@ class TrainingManager:
             "threshold": [0.5],  # If required by the metric. Either 1 threshold common to all classes or a list
 
             "loss_f": "BCE",  # Loss function to use: BCE, multilabelSoftMarginLoss, etc ... (see 'init')
+            "l1_loss_lambda": 0.0,
 
             # Optimizer parameters
             "optimizer": "Adam",
-            "learning_rate": 0.001,
+            "learning_rate": 0.0001,
             "weight_decay": 0.00001,
 
             # Learning rate scheduler parameters
@@ -102,6 +103,9 @@ class TrainingManager:
             self.loss_f = torch.nn.MultiLabelSoftMarginLoss()
         else:
             raise NotImplementedError("Loss function " + self.config["loss_f"] + " is not available.")
+        # l1 loss function, to push masks to 0 with negative samples
+        self.l1_loss_f = torch.nn.L1Loss()
+        self.l1_loss_lambda = self.config["l1_loss_lambda"]
 
         # list storing loss function and metric values for each epoch
         self.train_losses, self.dev_losses, self.test_losses = [], [], []
@@ -118,7 +122,7 @@ class TrainingManager:
 
     def save_metrics_and_losses(self):
         try:
-            state = torch.load(self.config["save_path"])
+            state = torch.load(self.config["save_path"], 'cpu')
         except FileNotFoundError:
             print("Could not find saved model, saving metrics and losses ...")
             state = {}
@@ -134,7 +138,7 @@ class TrainingManager:
             raise ValueError("File " + filename + " is not a valid file.")
         print("Loading from checkpoint '{}'".format(filename))
 
-        state = torch.load(filename)
+        state = torch.load(filename, 'cpu')
         if config_update is not None:  # Update dict if we have updated parameters
             state["config"].update(config_update)
         manager = cls(state["config"])
@@ -236,14 +240,16 @@ class TrainingManager:
             self.model.train()
             for batch_idx, (features, labels) in enumerate(train_loader):
                 self.optimizer.zero_grad()
-                predictions, _ = self.model(features)
+                predictions, masks = self.model(features)
                 loss = self.loss_f(predictions, labels)
-                loss.backward()
+                l1_loss = self.l1_loss_f(masks[1 - labels.to(torch.uint8)],
+                                         torch.zeros(masks[1 - labels.to(torch.uint8)].shape).to(masks))
+                ((1-self.l1_loss_lambda)*loss + self.l1_loss_lambda*l1_loss).backward()
                 self.optimizer.step()
 
                 all_predictions.append(predictions.detach().cpu().numpy())
                 all_labels.append(labels.detach().cpu().numpy())
-                losses.append(loss.item())
+                losses.append(((1-self.l1_loss_lambda)*loss + self.l1_loss_lambda*l1_loss).item())
 
             if self.config["scheduler_type"] == "ReduceLROnPlateau":
                 self.scheduler.step(np.mean(losses))
@@ -270,7 +276,7 @@ class TrainingManager:
                     max_metric = dev_metric
 
         print("Loading best model for evaluation on test set... ")
-        state = torch.load(self.config["save_path"])
+        state = torch.load(self.config["save_path"], 'cpu')
         self.model.load_state_dict(state["model_state_dict"])
         self.model.to(self.device)
         test_loss, test_metric = self.evaluate(self.test_set)
