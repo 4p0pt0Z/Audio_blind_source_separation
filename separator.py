@@ -1,11 +1,9 @@
 import torch
 import librosa
-import scipy
-
-from skimage.transform import resize
 
 import segmentation_model as md
 import data_set as dts
+from shutil import copyfile
 
 import os
 
@@ -24,9 +22,11 @@ class AudioSeparator:
         return config
 
     def __init__(self, data_set, model, config):
-        self.data_set = data_set
-        self.model = model
         self.config = config
+        self.data_set = data_set
+        self.data_set.shift_and_scale(self.config["shift"], self.config["scaling"])
+        self.model = model
+        self.model.eval()
         self.device = torch.device("cpu") if not self.config["use_gpu"] \
             else torch.device("cuda:" + str(self.config["gpu_no"]))
         # Check if the output folder exists, if not creates it, otherwise inform user and stop execution
@@ -43,51 +43,60 @@ class AudioSeparator:
             raise ValueError("File " + filename + " is not a valid file.")
         print("Loading model ...'{}'".format(filename))
 
-        state = torch.load(filename)
+        state = torch.load(filename, 'cpu')
         train_config = state["config"]
         train_config.update(config)
 
         test_set = dts.find_data_set_class(train_config["data_set_type"]).split(train_config, which_data_set)
-        test_set.shift_and_scale(state["config"]["shift"], state["config"]["scaling"])
 
         model = md.SegmentationModel(train_config, test_set.features_shape(), test_set.n_classes())
         model.load_state_dict(state["model_state_dict"])
 
         return cls(test_set, model, train_config)
 
-    def separate_spectrogram(self, masks, magnitude):
-        separated_spectrograms = [None] * masks.shape[0]
-        for idx, mask in enumerate(masks):
-            # Interpolate the masks to the shape of the input of network
-            # mask = resize(mask, self.data_set.features_shape(), preserve_range=True)
-            mask = scipy.misc.imresize(mask, (self.data_set.features_shape()[1], self.data_set.features_shape()[2]))
-            # From mel scale to fft frequencies
-            mask = self.data_set.inverse_mel_filterbank @ mask
-            # Apply mask
-            separated_spectrograms[idx] = magnitude * mask
+    def separate_spectrogram(self, masks, features):
+        """
 
-        return separated_spectrograms
+        Args:
+            masks (torch.Tensor): Shape: [n_class, ~freq, ~time]. The masks output of the segmentation model.
+            features (torch.Tensor): Shape [channel, freq, time]. The input features to the segmentation model.
+
+        Returns:
+
+        """
+        # resize the masks to the size of the features  (shape: [n_masks, channel, freq, time]
+        masks = torch.nn.functional.interpolate(masks.unsqueeze(1),
+                                                size=(features.shape[1], features.shape[2]),
+                                                mode='bilinear',
+                                                align_corners=False)
+        # Multiply each mask per the features (shape: [n_masks, features.shape[0], features.shape[1]]
+        spectrograms = masks * features
+        # Undo the feature scaling
+        self.data_set.rescale_to_initial(spectrograms, self.config["shift"], self.config["scaling"])
+        # Go back to "stft output" representation
+        return self.data_set.features_to_stft_magnitudes(spectrograms.cpu().numpy())
 
     def spectrogram_to_audio(self, spectrogram, phase):
         return self.data_set.istft(spectrogram * phase)
 
     def save_separated_audio(self, audios, filename):
-        folder_path = os.path.join(self.config["separated_audio_folder"], filename)
+        folder_path = os.path.join(self.config["separated_audio_folder"], os.path.splitext(filename)[0])
         os.makedirs(folder_path)
         for class_idx, audio in enumerate(audios):
-            librosa.output.write_wav(os.path.join(folder_path, self.data_set.classes[class_idx]),
-                                     audio,
+            librosa.output.write_wav(os.path.join(folder_path, self.data_set.classes[class_idx]) + '.wav',
+                                     audio.T,
                                      sr=self.data_set.config["sampling_rate"])
+        copyfile(self.data_set.audio_full_filename(filename), os.path.join(folder_path, "original_mix.wav"))
 
     def separate(self):
         self.model.to(self.device)
         self.model.eval()
         self.data_set.to(self.device)
-        self.data_set.shift_and_scale(self.config["shift"], self.config["scaling"])
 
         for idx in range(self.data_set.__len__()):
-            _, masks = self.model(self.data_set.__getitem__(idx)[0].unsqueeze(0))  # add batch dimension
-            masks = masks.to('cpu').numpy().squeeze()  # remove batch dimension
-            spectrograms = self.separate_spectrogram(masks, self.data_set.magnitudes[idx])
+            features = self.data_set.__getitem__(idx)[0]
+            _, masks = self.model(features.unsqueeze(0))  # (add batch dimension)
+            masks = masks.detach().squeeze()  # move "mask" dim in first position
+            spectrograms = self.separate_spectrogram(masks, features)
             audios = [self.spectrogram_to_audio(spectrogram, self.data_set.phases[idx]) for spectrogram in spectrograms]
             self.save_separated_audio(audios, self.data_set.filenames[idx])
