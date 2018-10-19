@@ -45,15 +45,15 @@ class SegmentationModel(nn.Module):
         elif config["classifier_model_type"] == "ChannelWiseRNNClassifier":
             config["class_num_channels"], config["class_input_size"] = x.shape[1], x.shape[2]
         elif config["classifier_model_type"] == "DepthWiseCNNClassifier":
-            config["class_conv_i_c"] = [n_classes] * len(config["class_conv_i_c"])
-            config["class_conv_o_c"] = [n_classes] * len(config["class_conv_o_c"])
-            config["class_conv_groups"] = [n_classes] * len(config["class_conv_groups"])
+            config["class_conv_i_c"] = [n_classes] * config["class_n_blocs"]
+            config["class_conv_o_c"] = [n_classes] * config["class_n_blocs"]
+            config["class_conv_groups"] = [n_classes] * config["class_n_blocs"]
 
         self.classifier_model = find_classifier_model_class(config["classifier_model_type"])(
             {key.replace('class_', ''): value for key, value in config.items()})
 
     def forward(self, x):
         x = self.mask_model(x)
-        masks = x.detach()
+        masks = x
         labels = self.classifier_model(x)
         return labels.squeeze(), masks
