@@ -1,7 +1,7 @@
 import torch.nn as nn
 
-ACTIVATION_DICT = {"relu": nn.ReLU, "lr": nn.LeakyReLU, "sig": nn.Sigmoid}
-NON_LINEARITY_DICT = {"lr": "leaky_relu", "sig": "sigmoid", "relu": "relu"}
+ACTIVATION_DICT = {"relu": nn.ReLU, "lr": nn.LeakyReLU, "sig": nn.Sigmoid, "softmax": nn.Softmax2d}
+NON_LINEARITY_DICT = {"lr": "leaky_relu", "sig": "sigmoid", "relu": "relu", "softmax": "sigmoid"}
 PADDING_TYPE_DICT = {"zero": nn.ZeroPad2d, "reflection": nn.ReflectionPad2d}
 DROPOUT_TYPE_DICT = {"1D": nn.Dropout, "2D": nn.Dropout2d}
 POOLING_TYPE_DICT = {"max": nn.MaxPool2d, "avg": nn.AvgPool2d}
