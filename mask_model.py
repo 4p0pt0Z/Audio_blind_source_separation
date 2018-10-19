@@ -54,7 +54,8 @@ class VGGLikeMaskModel(nn.Module):
 
     def __init__(self, config):
         super(VGGLikeMaskModel, self).__init__()
-        config["activations"][config["n_blocs"]-1] = "sig"  # last activations set to sigmoid
+        if config["activations"][config["n_blocs"]-1] != 'softmax':
+            config["activations"][config["n_blocs"] - 1] = "sig"  # last activations set to sigmoid
         config["dropout_probs"][config["n_blocs"]-1] = 0.0  # dropout on "masks" is 0.0
         self.net = VGGLikeCNN(config)
 
