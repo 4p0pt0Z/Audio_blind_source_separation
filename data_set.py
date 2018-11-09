@@ -1,6 +1,7 @@
 import os
 from abc import abstractmethod
 import h5py
+import yaml
 
 import concurrent.futures
 
@@ -130,8 +131,8 @@ class AudioDataSet(torchdata.Dataset):
         phase = stft / (magnitude + 1e-15)
         return magnitude, phase
 
-    def istft(self, ftst):
-        _, istft = scipy.signal.istft(ftst,
+    def istft(self, stft):
+        _, istft = scipy.signal.istft(stft,
                                       window=self.config["STFT_window_function"],
                                       nperseg=int(self.config["STFT_frame_width_ms"]
                                                   * self.config["sampling_rate"] // 1000),  # sr is per second
@@ -176,7 +177,11 @@ class DCASE2013RemixedDataSet(AudioDataSet):
             # Path to the mix files folder (also include the label file) (needed if building from audio files)
             "data_folder": "Datadir/remixed_DCASE2013",  # to this will be appended the set folder (train-dev-val)
 
-            "wanted_events": ['all'],
+            # Categories for regrouping the classes together: list of categories, each category is indicated as a string
+            # of the classes in the category separated by dots.for
+            # eg: --class_categories speech.laughter clearthroat.cough doorslam.drawer.keys.knock.pendrop.switch \
+            # keyboard.mouse phone.alert pageturn printer
+            "class_categories": ['all_separated'],
 
             "data_set_save_folder_path": "",
             "data_set_load_folder_path": "",  # (needed if building from a pre-saved data set)
@@ -223,8 +228,6 @@ class DCASE2013RemixedDataSet(AudioDataSet):
                                     - Load all files from disk and extract the features (Mel spectrogram)
                                     - Convert features and labels to torch.Tensor to have everything ready in memory.
         Args:
-            files_df (pd.Dataframe): Dataframe obtained from reading the '.csv' file describing the labels associated
-                                     with each audio file
             config (dict): Configuration dictionary containing parameters for audio features extraction.
         """
         super(DCASE2013RemixedDataSet, self).__init__(config)
@@ -236,6 +239,7 @@ class DCASE2013RemixedDataSet(AudioDataSet):
             print(e)
             print("Building data set from audio files !")
             files_df = pd.read_csv(os.path.join(config["data_folder"], "weak_labels.csv"))
+            files_df = files_df.reindex(sorted(files_df.columns), axis=1)  # sort columns
             self.magnitudes, self.phases, self.features, self.labels, self.classes, self.filenames = \
                 self.build_from_audio_files(files_df)
 
@@ -251,17 +255,18 @@ class DCASE2013RemixedDataSet(AudioDataSet):
         features = torch.Tensor([np.expand_dims(self.stft_magnitude_to_features(stft), 0)
                                  for stft in magnitudes])
 
-        if self.config["wanted_events"] == ["all"]:
+        if self.config["class_categories"] != self.default_config()["class_categories"]:
+            category_df = pd.DataFrame()
+            for category in self.config["class_categories"]:
+                category_df[category] = files_df.drop("filename", axis=1).apply(
+                    lambda row: any([row[event] for event in category.split('.')]), axis=1)
+            labels = torch.from_numpy(category_df.values.astype(np.float32))
+            classes = category_df.columns
+        else:
             labels = torch.from_numpy(files_df.drop("filename", axis=1).values.astype(np.float32))
             classes = list(files_df.columns)
             classes.remove("filename")
-        else:
-            wanted_events_labels = files_df[self.config["wanted_events"]].copy()
-            wanted_events_labels.loc[:, "noise"] = files_df.loc[:, [event for event in files_df.columns
-                                                                    if event not in self.config["wanted_events"]]].drop(
-                'filename', axis=1).sum(axis=1).clip(lower=0, upper=1)
-            labels = torch.from_numpy(wanted_events_labels.values.astype(np.float32))
-            classes = self.config['wanted_events'] + ['noise']
+
         filenames = files_df["filename"].tolist()
         return magnitudes, phases, features, labels, classes, filenames
 
@@ -342,8 +347,25 @@ class DCASE2013RemixedDataSet(AudioDataSet):
             features[:, i, :, :] = (features[:, i, :, :] * scaling[i].to(features[:, i, :, :].device)) \
                                    + shift[i].to(features[:, i, :, :].device)
 
-    def audio_full_filename(self, idx):
-        return os.path.join(self.config["data_folder"], self.filenames[idx])
+    def audio_full_filename(self, filename):
+        return os.path.join(self.config["data_folder"], filename)
+
+    def load_audio_source_files(self, idx):
+        source_files_dir = os.path.join(self.config["data_folder"],
+                                        os.path.splitext(self.filenames[idx])[0])
+        source_files = sorted(os.listdir(source_files_dir))
+        reference_sources = np.asarray([self.load_audio(os.path.join(source_files_dir, filename))
+                                        for filename in source_files])
+
+        if self.config["class_categories"] != self.default_config()["class_categories"]:
+            reference_category_sources = []
+            for category in self.config["class_categories"]:
+                source_rows = [idx for idx, source in enumerate(source_files)
+                               if any(event in source for event in category.split('.'))]
+                reference_category_sources.append(np.sum(reference_sources[source_rows, :], axis=0))
+            return np.asarray(reference_category_sources)
+        else:
+            return reference_sources
 
     def __getitem__(self, index):
         return self.features[index], self.labels[index]
@@ -379,6 +401,9 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
             # Path to the folder containing the audio mixes and groundtruths
             "audio_folder": "../ICASSP2018_joint_separation_classification/mixed_audio",
 
+            # Path to yaml file describing the mixes composition
+            "yaml_file": "../ICASSP2018_joint_separation_classification/mixed_yaml",  # training/testing is appended
+
             "thread_max_worker": 3,
 
             "scaling_type": "standardization"  # type of feature normalization: "min-max scaling", "standardization"
@@ -395,6 +420,12 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
             self.features = torch.from_numpy(np.array(hf.get('x'))).unsqueeze(1).permute(0, 1, 3, 2)
             self.labels = torch.from_numpy(np.array(hf.get('y')))
 
+        self.mix_idx = [idx for idx, filename in enumerate(self.filenames) if 'mix' in filename]
+        self.event_idx = [idx for idx, filename in enumerate(self.filenames) if 'event' in filename]
+        self.background_idx = [idx for idx, filename in enumerate(self.filenames) if 'bg' in filename]
+        with open(config["yaml_file"], 'r') as yaml_stream:
+            self.yaml = yaml.safe_load(yaml_stream)
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=config["thread_max_worker"]) as executor:
             audios = executor.map(lambda file: self.load_audio(os.path.join(self.config["audio_folder"], file)),
                                   self.filenames)
@@ -407,8 +438,10 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
         tr_config, test_config = dict(config), dict(config)
         tr_config["data_file"] = os.path.join(config["data_folder"], "training.h5")
         tr_config["audio_folder"] = os.path.join(config["audio_folder"], "training")
+        tr_config["yaml_file"] = os.path.join(config["yaml_file"], "training.csv")
         test_config["data_file"] = os.path.join(config["data_folder"], "testing.h5")
         test_config["audio_folder"] = os.path.join(config["audio_folder"], "testing")
+        test_config["yaml_file"] = os.path.join(config["yaml_file"], "testing.csv")
 
         if which == "all":
             return cls(tr_config), cls(test_config), cls(test_config)
@@ -466,6 +499,25 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
 
     def audio_full_filename(self, filename):
         return os.path.join(self.config["audio_folder"], filename)
+
+    def load_audio_source_files(self, idx):
+        if 'event' in self.filenames[idx]:
+            event = self.load_audio(self.audio_full_filename(self.filenames[idx]))
+            background = np.zeros(event.shape)
+        elif 'bg' in self.filenames[idx]:
+            background = self.load_audio(self.audio_full_filename(self.filenames[idx]))
+            event = np.zeros(background.shape)
+        elif 'mix' in self.filenames[idx]:
+            event = self.load_audio(self.audio_full_filename(self.filenames[idx-1]))
+            background = self.load_audio(self.audio_full_filename(self.filenames[idx-2]))
+
+        class_dict = {class_name: class_idx for class_idx, class_name in enumerate(self.classes)}
+
+        sources = np.zeros((len(self.classes), event.shape[0]))
+        sources[class_dict[self.yaml[idx//3]['event_type']]] = event
+        sources[class_dict['background']] = background
+
+        return sources
 
     def __getitem__(self, index):
         return self.features[index], self.labels[index]

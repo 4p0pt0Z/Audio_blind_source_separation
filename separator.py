@@ -1,5 +1,8 @@
 import torch
 import librosa
+import numpy as np
+
+import mir_eval
 
 import segmentation_model as md
 import data_set as dts
@@ -100,3 +103,34 @@ class AudioSeparator:
             spectrograms = self.separate_spectrogram(masks, features)
             audios = [self.spectrogram_to_audio(spectrogram, self.data_set.phases[idx]) for spectrogram in spectrograms]
             self.save_separated_audio(audios, self.data_set.filenames[idx])
+
+    def evaluate_separation(self):
+        sdr = np.zeros((self.data_set.__len__(), len(self.data_set.classes)))
+        sir = np.zeros((self.data_set.__len__(), len(self.data_set.classes)))
+        sar = np.zeros((self.data_set.__len__(), len(self.data_set.classes)))
+
+        for idx in range(self.data_set.__len__()):
+            separated_sources = np.asarray([self.data_set.load_audio(os.path.join(self.config["separated_audio_folder"],
+                                                                                  os.path.splitext(
+                                                                                      self.data_set.filenames[idx])[0],
+                                                                                  filename))
+                                            for filename in sorted(  # idx is not same for filename here and in class
+                                            os.listdir(os.path.join(self.config["separated_audio_folder"],
+                                                                    os.path.splitext(self.data_set.filenames[idx])[0])))
+                                            if 'mix' not in filename])
+
+            reference_sources = self.data_set.load_audio_source_files(idx)
+            # Crop to length of reconstructed signal (because last non-completed frames of fft is dropped)
+            # Add small offset to avoid having sources always 0 (mir_eval does not like that)
+            reference_sources = reference_sources[:, :separated_sources.shape[1]] + 1e-15
+
+            sdr[idx], sir[idx], sar[idx], _ = mir_eval.separation.bss_eval_sources(reference_sources,
+                                                                                   separated_sources,
+                                                                                   compute_permutation=False)
+
+            # for i_class in range(separated_sources.shape[0]):
+            #     sdr[idx, i_class], sir[idx, i_class], sar[idx, i_class], _ =\
+            #         mir_eval.separation.bss_eval_sources(reference_sources[i_class],
+            #                                              separated_sources[i_class],
+            #                                              compute_permutation=False)
+        return sdr, sir, sar

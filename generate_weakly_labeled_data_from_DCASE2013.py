@@ -24,7 +24,7 @@ def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folde
         length (float): Length of the mixed audio files
         max_event (int): Maximal number of events to include in a mixed file
         overlap (bool): Whether or not the audio events can overlap in the remixed files
-        wn_ratio (float): White noise ratio (with respect to the mean of mixed file)
+        wn_ratio (float): Energy ratio between white noise and audio signal
         sampling_rate (int): Sampling rate for the mixed audio files
 
     """
@@ -43,6 +43,9 @@ def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folde
             mixed_audio = np.zeros(mixed_audio_length, dtype=np.float)
             n_events = np.random.randint(low=1, high=max_event + 1)  # number of audio to include in this mixed file
             events_idx = np.random.choice(total_n_events, n_events)  # the audio files to include
+
+            ground_truth_events = np.zeros((len(classes), mixed_audio_length), dtype=np.float)
+
             if not overlap:
                 # The audio files can not overlap in the mix. We have two possibilities: if the audio files to
                 # include last more than the required length of the mix, then we include as much of the audio as we
@@ -55,12 +58,21 @@ def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folde
                         # If audio_data[idx] fits in the mix: copy it entirely
                         if mixed_audio_length - start >= audio_data[idx].shape[0]:
                             mixed_audio[start:start + audio_data[idx].shape[0]] = audio_data[idx]
+                            for class_idx, class_name in enumerate(classes):
+                                if audio_files[idx].startswith(class_name):
+                                    ground_truth_events[class_idx][start:start + audio_data[idx].shape[0]] += \
+                                        audio_data[idx]
                             start += audio_data[idx].shape[0]
                         else:  # If not: select a random part of the audio event to copy in the mix.
                             event_start_time = np.random.randint(
                                 audio_data[idx].shape[0] - (mixed_audio_length - start))
                             mixed_audio[start:] = audio_data[idx][event_start_time:
                                                                   event_start_time + mixed_audio_length - start]
+                            for class_idx, class_name in enumerate(classes):
+                                if audio_files[idx].startswith(class_name):
+                                    ground_truth_events[class_idx][start:] += audio_data[idx][event_start_time:
+                                                                                             event_start_time +
+                                                                                             mixed_audio_length - start]
                             # No more events will fit in this mix: remove the rest of the labels.
                             events_idx = events_idx[:idx_idx + 1]
                             break
@@ -73,6 +85,11 @@ def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folde
                     for i, idx in enumerate(events_idx):
                         mixed_audio[start + silences_length[i]: start + silences_length[i] + audio_data[idx].shape[0]] \
                             = audio_data[idx]
+                        for class_idx, class_name in enumerate(classes):
+                            if audio_files[idx].startswith(class_name):
+                                ground_truth_events[class_idx][start + silences_length[i]:
+                                                               start + silences_length[i] + audio_data[idx].shape[0]] \
+                                    += audio_data[idx]
                         start += silences_length[i] + audio_data[idx].shape[0]
             else:
                 # Overlap is authorized, so we simply draw random start times and copy the entire audio files in the mix
@@ -80,20 +97,30 @@ def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folde
                     event_length = np.amin([audio_data[idx].shape[0], mixed_audio_length - 1])  # clip to length of mix
                     start_time = np.random.randint(mixed_audio_length - event_length)
                     mixed_audio[start_time: start_time + event_length] += audio_data[idx][:event_length]
+                    for class_idx, class_name in enumerate(classes):
+                        if audio_files[idx].startswith(class_name):
+                            ground_truth_events[class_idx][start_time: start_time + event_length] \
+                                += audio_data[idx][:event_length]
 
             # Add white noise
             noise = np.random.normal(0.0, 1.0, mixed_audio_length)  # scale noise so that the energy ratio is 'wn_ratio'
             mixed_audio += np.sqrt(wn_ratio * np.sum(mixed_audio ** 2) / np.sum(noise ** 2)) * noise
             # Save file
-            name = uuid.uuid1().hex + '.wav'
-            librosa.output.write_wav(os.path.join(output_folder, name), mixed_audio, sampling_rate, norm=True)
+            name = uuid.uuid1().hex
+            librosa.output.write_wav(os.path.join(output_folder, name + '.wav'), mixed_audio, sampling_rate, norm=True)
+            # write ground truth events
+            os.makedirs(os.path.join(output_folder, name))
+            for class_idx, class_name in enumerate(classes):
+                librosa.output.write_wav(os.path.join(output_folder, name, class_name + '.wav'),
+                                         ground_truth_events[class_idx] / np.abs(mixed_audio).max(),  # normalize
+                                         sampling_rate, norm=False)
             # save file labels
             labels = [0] * len(classes)
             for idx in events_idx:
                 for i, class_name in enumerate(classes):
                     if audio_files[idx].startswith(class_name):
                         labels[i] = 1
-            label_writer.writerow([name] + [str(label) for label in labels])
+            label_writer.writerow([name + '.wav'] + [str(label) for label in labels])
 
 
 def main():
