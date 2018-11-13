@@ -44,14 +44,23 @@ class AudioDataSet(torchdata.Dataset):
             # Mix files parameters
             "sampling_rate": 0,
 
-            # Feature extraction parameters (log Mel spectrogram computation)
+            # Audio features: "mel", "log-mel", "pcen"
             "feature_type": "log-mel",
+
+            # Mel spectrogram parameters
             "STFT_frame_width_ms": 0,
             "STFT_frame_shift_ms": 0,
             "STFT_window_function": "hamming",
             "n_Mel_filters": 0,
             "Mel_min_freq": 0,
             "Mel_max_freq": 0,
+
+            # pcen parameters  # PCEN can be performed by the torch.Dataset with fixed parameters
+            "pcen_s": 0.025,  # or it can be used as a network layer (with trainable parameters)
+            "pcen_eps": 1e-6,
+            "pcen_alpha": 0.98,
+            "pcen_delta": 2.0,
+            "pcen_r": 0.5,
 
             "data_folder": "Datadir/",
 
@@ -106,15 +115,27 @@ class AudioDataSet(torchdata.Dataset):
 
     def stft_magnitude_to_features(self, magnitude):
         mel_spectrogram = self.mel_filterbank @ magnitude
-        if self.config["feature_type"] == "mel":
+        if self.config["feature_type"].lower() == "mel":
             return mel_spectrogram
-        elif self.config["feature_type"] == "log-mel":
-            log_mel_spectrogram = 10.0 * np.log10(mel_spectrogram + 1.0)  # +1 to make sure log is contracting
+        elif self.config["feature_type"].lower() == "log-mel":
+            log_mel_spectrogram = 10.0 * np.log1p(mel_spectrogram) / np.log(10.0)  # +1 to make sure log is contracting
             return log_mel_spectrogram
+        elif self.config["feature_type"].lower() == "pcen":
+            return librosa.core.pcen(mel_spectrogram,
+                                     sr=self.config["sampling_rate"],
+                                     hop_length=int(self.config["STFT_frame_width_ms"]
+                                                    * self.config["sampling_rate"] // 1000)
+                                                - int(self.config["STFT_frame_shift_ms"]
+                                                      * self.config["sampling_rate"] // 1000),
+                                     gain=self.config["pcen_alpha"],
+                                     bias=self.config["pcen_delta"],
+                                     power=self.config["pcen_r"],
+                                     b=self.config["pcen_s"],
+                                     eps=self.config["pcen_eps"])
 
     def features_to_stft_magnitudes(self, features):
         if self.config["feature_type"] == "log-mel":
-            features = np.power(10.0*np.ones(features.shape), (features/10.0)) - 1.0
+            features = np.power(10.0 * np.ones(features.shape), (features / 10.0)) - 1.0
         return self.inverse_mel_filterbank[np.newaxis, np.newaxis, ...] @ features
 
     def separated_stft(self, audio):
@@ -327,8 +348,8 @@ class DCASE2013RemixedDataSet(AudioDataSet):
             elif self.config["scaling_type"] == "min-max":
                 channel_shift[i] = self.features[:, i, :, :].min()
                 channel_scaling[i] = self.features[:, i, :, :].max() - channel_shift[i]  # max - min
-            elif not self.config["scaling_type"]:
-                print("[WARNING] No normalization procedure is specified !")
+            elif self.config["scaling_type"].lower() == "none":
+                print("[WARNING] No normalization procedure is used !")
                 channel_shift[i] = 0.0
                 channel_scaling[i] = 1.0
 
@@ -474,8 +495,8 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
             elif self.config["scaling_type"] == "min-max":
                 channel_shift[i] = self.features[:, i, :, :].min()
                 channel_scaling[i] = self.features[:, i, :, :].max() - channel_shift[i]  # max - min
-            elif not self.config["scaling_type"]:
-                print("[WARNING] No normalization procedure is specified !")
+            elif self.config["scaling_type"] == "none":
+                print("[WARNING] No normalization procedure is used !")
                 channel_shift[i] = 0.0
                 channel_scaling[i] = 1.0
 
@@ -491,7 +512,7 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
 
     def rescale_to_initial(self, features, shift, scaling):
         for i in range(features.shape[1]):
-            features[:, i, :, :] = (features[:, i, :, :] * scaling[i].to(features[:, i, :, :].device))\
+            features[:, i, :, :] = (features[:, i, :, :] * scaling[i].to(features[:, i, :, :].device)) \
                                    + shift[i].to(features[:, i, :, :].device)
 
     def features_to_stft_magnitudes(self, features):
@@ -508,13 +529,13 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
             background = self.load_audio(self.audio_full_filename(self.filenames[idx]))
             event = np.zeros(background.shape)
         elif 'mix' in self.filenames[idx]:
-            event = self.load_audio(self.audio_full_filename(self.filenames[idx-1]))
-            background = self.load_audio(self.audio_full_filename(self.filenames[idx-2]))
+            event = self.load_audio(self.audio_full_filename(self.filenames[idx - 1]))
+            background = self.load_audio(self.audio_full_filename(self.filenames[idx - 2]))
 
         class_dict = {class_name: class_idx for class_idx, class_name in enumerate(self.classes)}
 
         sources = np.zeros((len(self.classes), event.shape[0]))
-        sources[class_dict[self.yaml[idx//3]['event_type']]] = event
+        sources[class_dict[self.yaml[int(self.filenames[idx].split('.')[0])]['event_type']]] = event
         sources[class_dict['background']] = background
 
         return sources
