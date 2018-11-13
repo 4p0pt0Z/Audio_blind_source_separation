@@ -32,12 +32,6 @@ class AudioSeparator:
         self.model.eval()
         self.device = torch.device("cpu") if not self.config["use_gpu"] \
             else torch.device("cuda:" + str(self.config["gpu_no"]))
-        # Check if the output folder exists, if not creates it, otherwise inform user and stop execution
-        if not os.path.exists(self.config["separated_audio_folder"]):
-            os.makedirs(self.config["separated_audio_folder"])
-        else:
-            if os.listdir(self.config["separated_audio_folder"]):  # if folder is not empty
-                raise ValueError('Output folders already exist !')
 
     @classmethod
     def from_checkpoint(cls, config, which_data_set="test"):
@@ -92,6 +86,13 @@ class AudioSeparator:
         copyfile(self.data_set.audio_full_filename(filename), os.path.join(folder_path, "original_mix.wav"))
 
     def separate(self):
+        # Check if the output folder exists, if not creates it, otherwise inform user and stop execution
+        if not os.path.exists(self.config["separated_audio_folder"]):
+            os.makedirs(self.config["separated_audio_folder"])
+        else:
+            if os.listdir(self.config["separated_audio_folder"]):  # if folder is not empty
+                raise ValueError('Output folders already exist !')
+
         self.model.to(self.device)
         self.model.eval()
         self.data_set.to(self.device)
