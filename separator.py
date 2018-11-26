@@ -51,13 +51,13 @@ class AudioSeparator:
 
         return cls(test_set, model, train_config)
 
-    def separate_spectrogram(self, masks, features):
+    def separate_spectrogram(self, masks, features, features_idx):
         """
 
         Args:
             masks (torch.Tensor): Shape: [n_class, ~freq, ~time]. The masks output of the segmentation model.
             features (torch.Tensor): Shape [channel, freq, time]. The input features to the segmentation model.
-
+            features_idx (int): index of the features in data_set.features
         Returns:
 
         """
@@ -71,7 +71,18 @@ class AudioSeparator:
         # Undo the feature scaling
         self.data_set.rescale_to_initial(spectrograms, self.config["shift"], self.config["scaling"])
         # Go back to "stft output" representation
-        return self.data_set.features_to_stft_magnitudes(spectrograms.cpu().numpy())
+        return self.data_set.features_to_stft_magnitudes(spectrograms.cpu().numpy(), features_idx)
+
+    def separate_spectrogram_in_lin_scale(self, masks, features, features_idx):
+        masks = torch.nn.functional.interpolate(masks.unsqueeze(1),
+                                                size=(features.shape[1], features.shape[2]),
+                                                mode='bilinear',
+                                                align_corners=False)
+        masks = np.asarray([np.transpose(
+            self.data_set.mel_filterbank / (np.sum(self.data_set.mel_filterbank, axis=0) + 1e-8)) @ mask
+                            for mask in masks.squeeze()])
+        # W / (np.sum(W, axis=0) + 1e-8)  # inverse of log compression in reference implementation
+        return masks * self.data_set.magnitudes[features_idx]
 
     def spectrogram_to_audio(self, spectrogram, phase):
         return self.data_set.istft(spectrogram * phase)
@@ -85,7 +96,7 @@ class AudioSeparator:
                                      sr=self.data_set.config["sampling_rate"])
         copyfile(self.data_set.audio_full_filename(filename), os.path.join(folder_path, "original_mix.wav"))
 
-    def separate(self):
+    def separate(self, separation_method='in_log'):
         # Check if the output folder exists, if not creates it, otherwise inform user and stop execution
         if not os.path.exists(self.config["separated_audio_folder"]):
             os.makedirs(self.config["separated_audio_folder"])
@@ -101,33 +112,44 @@ class AudioSeparator:
             features = self.data_set.__getitem__(idx)[0]
             _, masks = self.model(features.unsqueeze(0))  # (add batch dimension)
             masks = masks.detach().squeeze()  # move "mask" dim in first position
-            spectrograms = self.separate_spectrogram(masks, features)
+            if separation_method == 'in_log':
+                spectrograms = self.separate_spectrogram(masks, features, idx)
+            elif separation_method == 'in_lin':
+                spectrograms = self.separate_spectrogram_in_lin_scale(masks, features, idx)
+            else:
+                raise ValueError('Separation method ' + separation_method + ' is not available.')
             audios = [self.spectrogram_to_audio(spectrogram, self.data_set.phases[idx]) for spectrogram in spectrograms]
             self.save_separated_audio(audios, self.data_set.filenames[idx])
 
-    def evaluate_separation(self):
-        sdr = np.zeros((self.data_set.__len__(), len(self.data_set.classes)))
-        sir = np.zeros((self.data_set.__len__(), len(self.data_set.classes)))
-        sar = np.zeros((self.data_set.__len__(), len(self.data_set.classes)))
+    def evaluate_separation(self, indices=None):
+        # if indices is passed: evaluate separation for the file of the given indices. Otherwise: do entire data set
+        if indices is None:
+            indices = np.arange(self.data_set.__len__())
+        sdr = np.zeros((indices.shape[0], len(self.data_set.classes)))
+        sir = np.zeros((indices.shape[0], len(self.data_set.classes)))
+        sar = np.zeros((indices.shape[0], len(self.data_set.classes)))
 
-        for idx in range(self.data_set.__len__()):
+        for idx in indices:
             separated_sources = np.asarray([self.data_set.load_audio(os.path.join(self.config["separated_audio_folder"],
                                                                                   os.path.splitext(
                                                                                       self.data_set.filenames[idx])[0],
                                                                                   filename))
-                                            for filename in sorted(  # idx is not same for filename here and in class
-                                            os.listdir(os.path.join(self.config["separated_audio_folder"],
-                                                                    os.path.splitext(self.data_set.filenames[idx])[0])))
-                                            if 'mix' not in filename])
+                                            for filename in sorted(  # idx may not b same for filename here and in class
+                    os.listdir(os.path.join(self.config["separated_audio_folder"],
+                                            os.path.splitext(self.data_set.filenames[idx])[0])))
+                                            if 'mix' not in filename])  # original mix is copied over with sep. sources
 
             reference_sources = self.data_set.load_audio_source_files(idx)
             # Crop to length of reconstructed signal (because last non-completed frames of fft is dropped)
             # Add small offset to avoid having sources always 0 (mir_eval does not like that)
             reference_sources = reference_sources[:, :separated_sources.shape[1]] + 1e-15
 
-            sdr[idx], sir[idx], sar[idx], _ = mir_eval.separation.bss_eval_sources(reference_sources,
-                                                                                   separated_sources,
-                                                                                   compute_permutation=False)
+            sdr[idx], _, sir[idx], sar[idx], _ = mir_eval.separation.bss_eval_images(reference_sources,
+                                                                                     separated_sources,
+                                                                                     compute_permutation=False)
+            # sdr[idx], sir[idx], sar[idx], _ = mir_eval.separation.bss_eval_sources(reference_sources,
+            #                                                                        separated_sources,
+            #                                                                        compute_permutation=False)
 
             # for i_class in range(separated_sources.shape[0]):
             #     sdr[idx, i_class], sir[idx, i_class], sar[idx, i_class], _ =\
