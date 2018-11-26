@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 ACTIVATION_DICT = {"relu": nn.ReLU, "lr": nn.LeakyReLU, "sig": nn.Sigmoid, "softmax": nn.Softmax2d}
@@ -12,6 +13,9 @@ class VGGLikeCNN(nn.Module):
     def default_config(cls):
         config = {
             "n_blocs": 1,
+
+            "freq_coord_conv": False,
+
             "conv_i_c": [1],  # input channels
             "conv_o_c": [64],  # output channels
             "conv_k_f": [3],  # kernel size on frequency axis
@@ -43,6 +47,12 @@ class VGGLikeCNN(nn.Module):
         super(VGGLikeCNN, self).__init__()
 
         self.n_blocs = config["n_blocs"]
+
+        self.use_coord_conv = config["freq_coord_conv"]
+        if self.use_coord_conv:
+            config = dict(config)  # copy the dict so that changed values are not propagated
+            for idx, i_c in enumerate(config["conv_i_c"]):
+                config["conv_i_c"][idx] = i_c + 1
 
         self.conv_padding = nn.ModuleList(
             [PADDING_TYPE_DICT[config["conv_pad_type"]]((config["conv_p_f"][i], config["conv_p_f"][i],
@@ -79,6 +89,10 @@ class VGGLikeCNN(nn.Module):
     def forward(self, x):
         for idx in range(self.n_blocs):
             x = self.conv_padding[idx](x)
+            if self.use_coord_conv:  # add frequency bin coordinates (normalized) as a channel
+                x = torch.cat((x, torch.arange(x.shape[2], dtype=x.dtype, device=x.device)
+                               .unsqueeze(0).unsqueeze(0).unsqueeze(-1).expand(x.shape[0], -1, x.shape[2], x.shape[3])
+                               / x.shape[2]), 1)
             x = self.convolutions[idx](x)
             if self.use_batch_norm:
                 x = self.batch_norms[idx](x)
