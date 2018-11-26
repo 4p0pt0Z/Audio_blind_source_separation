@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from mask_model import find_mask_model_class
 from classifier_model import find_classifier_model_class
+from pcen import PCEN
 
 
 class SegmentationModel(nn.Module):
@@ -21,15 +22,21 @@ class SegmentationModel(nn.Module):
 
         """
         mask_config = {"mask_{}".format(key): value
-                     for key, value in find_mask_model_class(mask_model_type).default_config().items()}
+                       for key, value in find_mask_model_class(mask_model_type).default_config().items()}
         class_config = {"class_{}".format(key): value
-                     for key, value in find_classifier_model_class(classifier_model_type).default_config().items()}
-        return {**mask_config, **class_config}
+                        for key, value in find_classifier_model_class(classifier_model_type).default_config().items()}
+        pcen_config = {"train_pcen": False, "train_pcen_s": [0.0], "train_pcen_eps": 1e-6}
+        return {**pcen_config, **mask_config, **class_config}
 
     def __init__(self, config, input_shape, n_classes):
         super(SegmentationModel, self).__init__()
 
         config["mask_conv_o_c"][-1] = n_classes
+
+        if config["train_pcen"]:
+            self.pcen = PCEN(input_shape[-2],
+                             config["train_pcen_s"] if config["train_pcen_s"][0] != 0.0 else None,
+                             config["train_pcen_eps"])
 
         # Instantiate with sizes, etc...
         self.mask_model = find_mask_model_class(config["mask_model_type"])(
@@ -53,6 +60,8 @@ class SegmentationModel(nn.Module):
             {key.replace('class_', ''): value for key, value in config.items()})
 
     def forward(self, x):
+        if hasattr(self, "pcen"):
+            x = self.pcen(x)
         x = self.mask_model(x)
         masks = x
         labels = self.classifier_model(x)
