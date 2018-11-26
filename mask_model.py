@@ -24,6 +24,9 @@ class VGGLikeMaskModel(nn.Module):
         config = VGGLikeCNN.default_config()
         config.update({
             "n_blocs": 6,
+
+            "freq_coord_conv": False,
+
             "conv_i_c": [1, 64, 64, 64, 64, 64],  # input channels
             "conv_o_c": [64, 64, 64, 64, 64, 16],  # output channels
             "conv_k_f": [3, 3, 3, 3, 3, 3],  # kernel size on frequency axis
