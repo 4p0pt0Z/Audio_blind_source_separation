@@ -17,6 +17,8 @@ Master thesis Fall 2018: Neural Network based Audio Blind source Separation for 
 * h5py
 * pyyaml
 * mir_eval (installed with pip) for audio separation performance measurements
+* cython (pip)  # not used
+* pyroomacoustics (pip)  # not used
 
 ### Replicate Blind Source Segmentation on weakly labelled data paper
 The first step of this work is to build a framework for audio blind source separation (ABSS) working on weakly labelled data, inspired from the results described in the paper [Sound Event Detection and Time-Frequency Segmentation from Weakly Labeled Data](https://arxiv.org/abs/1804.04715).
