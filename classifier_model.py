@@ -128,6 +128,9 @@ class DepthWiseCNNClassifier(nn.Module):
         config = VGGLikeCNN.default_config()
         config.update({
             "n_blocs": 1,
+
+            "freq_coord_conv": False,
+
             "conv_i_c": [16],  # input channels
             "conv_o_c": [16],  # output channels
             "conv_k_f": [3],  # kernel size on frequency axis
