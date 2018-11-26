@@ -2,6 +2,7 @@ import os
 from abc import abstractmethod
 import h5py
 import yaml
+import json
 
 import concurrent.futures
 
@@ -13,6 +14,7 @@ import pandas as pd
 import scipy
 
 import librosa
+from pcen import pcen, first_order_iir, no_arti_pcen
 
 
 def find_data_set_class(data_set_type):
@@ -28,6 +30,8 @@ def find_data_set_class(data_set_type):
         return DCASE2013RemixedDataSet
     elif data_set_type == "ICASSP2018JointSeparationClassificationDataSet":
         return ICASSP2018JointSeparationClassificationDataSet
+    elif data_set_type == "AudiosetSegments":
+        return AudiosetSegments
     else:
         raise NotImplementedError("Data set type " + data_set_type + " is not available.")
 
@@ -56,7 +60,7 @@ class AudioDataSet(torchdata.Dataset):
             "Mel_max_freq": 0,
 
             # pcen parameters  # PCEN can be performed by the torch.Dataset with fixed parameters
-            "pcen_s": 0.025,  # or it can be used as a network layer (with trainable parameters)
+            "pcen_s": 0.04,  # or it can be used as a network layer (with trainable parameters)
             "pcen_eps": 1e-6,
             "pcen_alpha": 0.98,
             "pcen_delta": 2.0,
@@ -79,64 +83,96 @@ class AudioDataSet(torchdata.Dataset):
                                                   fmin=self.config["Mel_min_freq"],
                                                   fmax=self.config["Mel_max_freq"]).astype(np.float32)
         self.inverse_mel_filterbank = np.linalg.pinv(self.mel_filterbank)
+        # To be filled by child class
+        self.features = None
+        self.labels = None
+        self.magnitudes = None
+        self.phases = None
 
     @classmethod
     @abstractmethod
     def split(cls, config, which="all"):
         pass
 
-    @abstractmethod
     def features_shape(self):
-        pass
+        return tuple(self.features[0].shape)
 
-    @abstractmethod
     def n_classes(self):
-        pass
+        return self.labels.shape[1]
 
-    @abstractmethod
     def to(self, device):
-        pass
+        self.features = self.features.to(device)
+        self.labels = self.labels.to(device)
 
-    @abstractmethod
     def compute_shift_and_scaling(self):
-        pass
+        n_channels = self.features.shape[1]
+        channel_shift = [np.nan] * n_channels
+        channel_scaling = [np.nan] * n_channels
+        for i in range(self.features.shape[1]):
+            if self.config["scaling_type"] == "standardization":
+                channel_shift[i] = self.features[:, i, :, :].mean()
+                channel_scaling[i] = self.features[:, i, :, :].std()
+            elif self.config["scaling_type"] == "min-max":
+                channel_shift[i] = self.features[:, i, :, :].min()
+                channel_scaling[i] = self.features[:, i, :, :].max() - channel_shift[i]  # max - min
+            elif self.config["scaling_type"].lower() == "none":
+                print("[WARNING] No normalization procedure is used !")
+                channel_shift[i] = 0.0
+                channel_scaling[i] = 1.0
 
-    @abstractmethod
+        return channel_shift, channel_scaling
+
     def shift_and_scale(self, shift, scaling):
-        pass
+        for i in range(self.features.shape[1]):  # per channel
+            self.features[:, i, :, :] = (self.features[:, i, :, :] - shift[i]) / scaling[i]
 
-    @abstractmethod
     def un_shift_and_scale(self, shift, scaling):
-        pass
+        for i in range(self.features.shape[1]):
+            self.features[:, i, :, :] = (self.features[:, i, :, :] * scaling[i]) + shift[i]
 
-    @abstractmethod
     def rescale_to_initial(self, features, shift, scaling):
-        pass
+        for i in range(features.shape[1]):
+            features[:, i, :, :] = (features[:, i, :, :] * scaling[i].to(features[:, i, :, :].device)) \
+                                   + shift[i].to(features[:, i, :, :].device)
 
-    def stft_magnitude_to_features(self, magnitude):
-        mel_spectrogram = self.mel_filterbank @ magnitude
+    def stft_magnitude_to_features(self, magnitude=None, mel_spectrogram=None):
+        if mel_spectrogram is None:
+            mel_spectrogram = self.mel_filterbank @ magnitude
         if self.config["feature_type"].lower() == "mel":
             return mel_spectrogram
         elif self.config["feature_type"].lower() == "log-mel":
             log_mel_spectrogram = 10.0 * np.log1p(mel_spectrogram) / np.log(10.0)  # +1 to make sure log is contracting
             return log_mel_spectrogram
         elif self.config["feature_type"].lower() == "pcen":
-            return librosa.core.pcen(mel_spectrogram,
-                                     sr=self.config["sampling_rate"],
-                                     hop_length=int(self.config["STFT_frame_width_ms"]
-                                                    * self.config["sampling_rate"] // 1000)
-                                                - int(self.config["STFT_frame_shift_ms"]
-                                                      * self.config["sampling_rate"] // 1000),
-                                     gain=self.config["pcen_alpha"],
-                                     bias=self.config["pcen_delta"],
-                                     power=self.config["pcen_r"],
-                                     b=self.config["pcen_s"],
-                                     eps=self.config["pcen_eps"])
+            # return librosa.core.pcen(mel_spectrogram,
+            #                          sr=self.config["sampling_rate"],
+            #                          hop_length=int(self.config["STFT_frame_width_ms"]
+            #                                         * self.config["sampling_rate"] // 1000)
+            #                                     - int(self.config["STFT_frame_shift_ms"]
+            #                                           * self.config["sampling_rate"] // 1000),
+            #                          gain=self.config["pcen_alpha"],
+            #                          bias=self.config["pcen_delta"],
+            #                          power=self.config["pcen_r"],
+            #                          b=self.config["pcen_s"],
+            #                          eps=self.config["pcen_eps"])
+            return pcen(mel_spectrogram, self.config["pcen_alpha"], self.config["pcen_delta"], self.config["pcen_r"],
+                        self.config["pcen_s"], self.config["pcen_eps"])
 
-    def features_to_stft_magnitudes(self, features):
+    def features_to_stft_magnitudes(self, features, features_idx):
         if self.config["feature_type"] == "log-mel":
             features = np.power(10.0 * np.ones(features.shape), (features / 10.0)) - 1.0
-        return self.inverse_mel_filterbank[np.newaxis, np.newaxis, ...] @ features
+            return self.inverse_mel_filterbank[np.newaxis, np.newaxis, ...] @ features
+        elif self.config["feature_type"] == "mel":
+            return self.inverse_mel_filterbank[np.newaxis, np.newaxis, ...] @ features
+        elif self.config["feature_type"] == "pcen":
+            # get the magnitudes corresponding to the features - get the filter, invert it, invert pcen
+            # M = first_order_iir(self.mel_filterbank @ self.magnitudes[features_idx], self.config["pcen_s"][0])
+            M = scipy.signal.filtfilt([self.config["pcen_s"]], [1, self.config["pcen_s"] - 1],
+                                      self.mel_filterbank @ self.magnitudes[features_idx], axis=-1, padtype=None)
+            M = np.exp(-self.config["pcen_alpha"]
+                       * (np.log(self.config["pcen_eps"]) + np.log1p(M / self.config["pcen_eps"])))
+            return (np.power(features + self.config["pcen_delta"] ** self.config["pcen_r"], 1.0 / self.config["pcen_r"])
+                    - self.config["pcen_delta"]) / M
 
     def separated_stft(self, audio):
         _, _, stft = scipy.signal.stft(audio,
@@ -320,54 +356,6 @@ class DCASE2013RemixedDataSet(AudioDataSet):
             hf.create_dataset('classes', data=np.array(self.classes, dtype='S'))
             hf.create_dataset('filenames', data=np.array(self.filenames, dtype='S'))
 
-    def features_shape(self):
-        return tuple(self.features[0].shape)
-
-    def n_classes(self):
-        return self.labels.shape[1]
-
-    def to(self, device):
-        """
-            After this method is called, the data set should only provide batches of tensors on 'device',
-            therefore in this case we move the features and label to the corresponding device.
-        Args:
-            device (torch.device):
-
-        """
-        self.features = self.features.to(device)
-        self.labels = self.labels.to(device)
-
-    def compute_shift_and_scaling(self):
-        n_channels = self.features.shape[1]
-        channel_shift = [np.nan] * n_channels
-        channel_scaling = [np.nan] * n_channels
-        for i in range(self.features.shape[1]):
-            if self.config["scaling_type"] == "standardization":
-                channel_shift[i] = self.features[:, i, :, :].mean()
-                channel_scaling[i] = self.features[:, i, :, :].std()
-            elif self.config["scaling_type"] == "min-max":
-                channel_shift[i] = self.features[:, i, :, :].min()
-                channel_scaling[i] = self.features[:, i, :, :].max() - channel_shift[i]  # max - min
-            elif self.config["scaling_type"].lower() == "none":
-                print("[WARNING] No normalization procedure is used !")
-                channel_shift[i] = 0.0
-                channel_scaling[i] = 1.0
-
-        return channel_shift, channel_scaling
-
-    def shift_and_scale(self, shift, scaling):
-        for i in range(self.features.shape[1]):  # per channel
-            self.features[:, i, :, :] = (self.features[:, i, :, :] - shift[i]) / scaling[i]
-
-    def un_shift_and_scale(self, shift, scaling):
-        for i in range(self.features.shape[1]):
-            self.features[:, i, :, :] = (self.features[:, i, :, :] * scaling[i]) + shift[i]
-
-    def rescale_to_initial(self, features, shift, scaling):
-        for i in range(features.shape[1]):
-            features[:, i, :, :] = (features[:, i, :, :] * scaling[i].to(features[:, i, :, :].device)) \
-                                   + shift[i].to(features[:, i, :, :].device)
-
     def audio_full_filename(self, filename):
         return os.path.join(self.config["data_folder"], filename)
 
@@ -416,6 +404,13 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
             "Mel_min_freq": 0,
             "Mel_max_freq": 8000,
 
+            # pcen parameters  # PCEN can be performed by the torch.Dataset with fixed parameters
+            "pcen_s": 0.04,  # or it can be used as a network layer (with trainable parameters)
+            "pcen_eps": 1e-6,
+            "pcen_alpha": 0.98,
+            "pcen_delta": 2.0,
+            "pcen_r": 0.5,
+
             # Path to the folder containing the features (hdf5 files)
             "data_folder": "../ICASSP2018_joint_separation_classification/packed_features/logmel/",
 
@@ -452,6 +447,8 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
                                   self.filenames)
         self.magnitudes, self.phases = tuple(map(lambda x: np.asarray(list(x)),
                                                  zip(*[self.separated_stft(audio) for audio in audios])))
+        self.features = torch.Tensor([np.expand_dims(self.stft_magnitude_to_features(stft), 0)
+                                      for stft in self.magnitudes])
         self.classes = ['babycry', 'glassbreak', 'gunshot', 'background']
 
     @classmethod
@@ -474,52 +471,28 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
         else:
             raise ValueError("Set identifier " + which + " is not available.")
 
-    def features_shape(self):
-        return tuple(self.features[0].shape)
-
-    def n_classes(self):
-        return self.labels.shape[1]
-
-    def to(self, device):
-        self.features = self.features.to(device)
-        self.labels = self.labels.to(device)
-
-    def compute_shift_and_scaling(self):
-        n_channels = self.features.shape[1]
-        channel_shift = [np.nan] * n_channels
-        channel_scaling = [np.nan] * n_channels
-        for i in range(self.features.shape[1]):
-            if self.config["scaling_type"] == "standardization":
-                channel_shift[i] = self.features[:, i, :, :].mean()
-                channel_scaling[i] = self.features[:, i, :, :].std()
-            elif self.config["scaling_type"] == "min-max":
-                channel_shift[i] = self.features[:, i, :, :].min()
-                channel_scaling[i] = self.features[:, i, :, :].max() - channel_shift[i]  # max - min
-            elif self.config["scaling_type"] == "none":
-                print("[WARNING] No normalization procedure is used !")
-                channel_shift[i] = 0.0
-                channel_scaling[i] = 1.0
-
-        return channel_shift, channel_scaling
-
-    def shift_and_scale(self, shift, scaling):
-        for i in range(self.features.shape[1]):  # per channel
-            self.features[:, i, :, :] = (self.features[:, i, :, :] - shift[i]) / scaling[i]
-
-    def un_shift_and_scale(self, shift, scaling):
-        for i in range(self.features.shape[1]):
-            self.features[:, i, :, :] = (self.features[:, i, :, :] * scaling[i]) + shift[i]
-
-    def rescale_to_initial(self, features, shift, scaling):
-        for i in range(features.shape[1]):
-            features[:, i, :, :] = (features[:, i, :, :] * scaling[i].to(features[:, i, :, :].device)) \
-                                   + shift[i].to(features[:, i, :, :].device)
-
-    def features_to_stft_magnitudes(self, features):
+    def features_to_stft_magnitudes(self, features, _):
         return self.inverse_mel_filterbank[np.newaxis, np.newaxis, ...] @ (np.exp(features) - 1e-8)
+    # TODO: add pcen and mel inverse!
+
+    def stft_magnitude_to_features(self, magnitude):
+        if self.config["feature_type"] == "pcen":
+            return no_arti_pcen(self.mel_filterbank @ magnitude, sr=self.config["sampling_rate"], hop_length=512,
+                                gain=self.config["pcen_alpha"], bias=self.config["pcen_delta"],
+                                power=self.config["pcen_r"], b=self.config["pcen_s"], eps=self.config["pcen_eps"])
+        elif self.config["feature_type"] == "mel":
+            return self.mel_filterbank @ magnitude
+        else:
+            return np.log(self.mel_filterbank @ magnitude + 1e-8)
 
     def audio_full_filename(self, filename):
         return os.path.join(self.config["audio_folder"], filename)
+
+    def load_audio(self, filename):
+        audio, _ = librosa.core.load(filename, sr=self.config["sampling_rate"], mono=False)
+        if audio.ndim > 1:
+            audio = np.sum(audio, axis=0)
+        return audio
 
     def load_audio_source_files(self, idx):
         if 'event' in self.filenames[idx]:
@@ -529,8 +502,11 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
             background = self.load_audio(self.audio_full_filename(self.filenames[idx]))
             event = np.zeros(background.shape)
         elif 'mix' in self.filenames[idx]:
-            event = self.load_audio(self.audio_full_filename(self.filenames[idx - 1]))
-            background = self.load_audio(self.audio_full_filename(self.filenames[idx - 2]))
+            audio, _ = librosa.core.load(self.audio_full_filename(self.filenames[idx]), sr=16000, mono=False)
+            background = audio[0]
+            event = audio[1]
+            # event = self.load_audio(self.audio_full_filename(self.filenames[idx - 1]))
+            # background = self.load_audio(self.audio_full_filename(self.filenames[idx - 2]))
 
         class_dict = {class_name: class_idx for class_idx, class_name in enumerate(self.classes)}
 
@@ -545,3 +521,60 @@ class ICASSP2018JointSeparationClassificationDataSet(AudioDataSet):
 
     def __len__(self):
         return self.features.shape[0]
+
+
+class AudiosetSegments(AudioDataSet):
+
+    @classmethod
+    def default_config(cls):
+        config = super(AudiosetSegments, cls).default_config()
+        return config
+
+    @classmethod
+    def split(cls, config, which="all"):
+        config_json_path = os.path.join(config["data_folder"], 'config.json')
+        tr_hdf5_path = os.path.join(config["data_folder"], 'train_data.hdf5')
+        dev_hdf5_path = os.path.join(config["data_folder"], 'dev_data.hdf5')
+        test_hgf5_path = os.path.join(config["data_folder"], 'test_data.hdf5')
+
+        if which == "all":
+            return cls(config, config_json_path, tr_hdf5_path), \
+                   cls(config, config_json_path, dev_hdf5_path), \
+                   cls(config, config_json_path, test_hgf5_path)
+        elif which == "train":
+            return cls(config, config_json_path, tr_hdf5_path)
+        elif which == "dev":
+            return cls(config, config_json_path, dev_hdf5_path)
+        elif which == "test":
+            return cls(config, config_json_path, test_hgf5_path)
+        else:
+            raise ValueError('Set ID ' + which + ' is not available.')
+
+    def __init__(self, config, config_json_path, data_hdf5_path):
+        # First read feature extraction configuration file
+        with open(config_json_path, 'r') as config_file:
+            data_config = json.load(config_file)
+        config.update(data_config)
+
+        super(AudiosetSegments, self).__init__(config)
+
+        with h5py.File(data_hdf5_path, 'r') as data_file:
+            self.stft_magnitudes = np.array(data_file.get('stft_magnitudes'))
+            self.stft_phases = np.array(data_file.get('stft_phases'))
+            self.features = np.array(data_file.get('mel_spectrograms'))
+            self.labels = torch.from_numpy(np.array(data_file.get('labels')))
+            self.filenames = [os.path.basename(file.decode()) for file in list(data_file.get('filenames'))]
+
+        self.features = torch.Tensor([np.expand_dims(self.stft_magnitude_to_features(None, mel_spec), 0)
+                                      for mel_spec in self.features])
+        self.classes = self.config["classes"]
+
+    def audio_full_filename(self, idx):
+        return os.path.join(self.config["data_folder"], self.filenames[idx])
+
+    def __getitem__(self, index):
+        return self.features[index], self.labels[index]
+
+    def __len__(self):
+        return self.features.shape[0]
+
