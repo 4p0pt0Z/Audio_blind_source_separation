@@ -136,6 +136,8 @@ class AudioDataSet(torchdata.Dataset):
                                    + shift[i].to(features[:, i, :, :].device)
 
     def stft_magnitude_to_features(self, magnitude=None, mel_spectrogram=None):
+        if self.config["feature_type"].lower() == "spectrogram":
+            return magnitude
         if mel_spectrogram is None:
             mel_spectrogram = self.mel_filterbank @ magnitude
         if self.config["feature_type"].lower() == "mel":
@@ -143,6 +145,8 @@ class AudioDataSet(torchdata.Dataset):
         elif self.config["feature_type"].lower() == "log-mel":
             log_mel_spectrogram = 10.0 * np.log1p(mel_spectrogram) / np.log(10.0)  # +1 to make sure log is contracting
             return log_mel_spectrogram
+        elif self.config["feature_type"].lower() == "log-mel_no_shift":
+            return np.log(mel_spectrogram + 1e-15)
         elif self.config["feature_type"].lower() == "pcen":
             # return librosa.core.pcen(mel_spectrogram,
             #                          sr=self.config["sampling_rate"],
@@ -155,10 +159,15 @@ class AudioDataSet(torchdata.Dataset):
             #                          power=self.config["pcen_r"],
             #                          b=self.config["pcen_s"],
             #                          eps=self.config["pcen_eps"])
-            return pcen(mel_spectrogram, self.config["pcen_alpha"], self.config["pcen_delta"], self.config["pcen_r"],
-                        self.config["pcen_s"], self.config["pcen_eps"])
+            return no_arti_pcen(mel_spectrogram, sr=self.config["sampling_rate"],
+                                hop_length=int(np.floor(self.config["STFT_frame_shift_ms"]
+                                                        * self.config["sampling_rate"] // 1000)),
+                                gain=self.config["pcen_alpha"], bias=self.config["pcen_delta"],
+                                power=self.config["pcen_r"], b=self.config["pcen_s"], eps=self.config["pcen_eps"])
 
     def features_to_stft_magnitudes(self, features, features_idx):
+        if self.config["feature_type"] == "spectrogram":
+            return features
         if self.config["feature_type"] == "log-mel":
             features = np.power(10.0 * np.ones(features.shape), (features / 10.0)) - 1.0
             return self.inverse_mel_filterbank[np.newaxis, np.newaxis, ...] @ features
@@ -204,7 +213,7 @@ class AudioDataSet(torchdata.Dataset):
         return audio
 
     @abstractmethod
-    def audio_full_filename(self, idx):
+    def audio_full_filename(self, filename):
         pass
 
 
@@ -528,6 +537,8 @@ class AudiosetSegments(AudioDataSet):
     @classmethod
     def default_config(cls):
         config = super(AudiosetSegments, cls).default_config()
+        config["multi_loudness"] = False  # allow random change in loudness of examples (see getitem)
+        config["categories"] = ["none"]  # allow to group classes together and train to classify categories (see init)
         return config
 
     @classmethod
@@ -559,20 +570,41 @@ class AudiosetSegments(AudioDataSet):
         super(AudiosetSegments, self).__init__(config)
 
         with h5py.File(data_hdf5_path, 'r') as data_file:
-            self.stft_magnitudes = np.array(data_file.get('stft_magnitudes'))
-            self.stft_phases = np.array(data_file.get('stft_phases'))
+            self.magnitudes = np.array(data_file.get('stft_magnitudes'))
+            self.phases = np.array(data_file.get('stft_phases'))
             self.features = np.array(data_file.get('mel_spectrograms'))
             self.labels = torch.from_numpy(np.array(data_file.get('labels')))
             self.filenames = [os.path.basename(file.decode()) for file in list(data_file.get('filenames'))]
 
-        self.features = torch.Tensor([np.expand_dims(self.stft_magnitude_to_features(None, mel_spec), 0)
-                                      for mel_spec in self.features])
+        self.features = torch.Tensor([np.expand_dims(self.stft_magnitude_to_features(self.magnitudes[idx],
+                                                                                     self.features[idx]), 0)
+                                      for idx in range(self.features.shape[0])])
         self.classes = self.config["classes"]
 
-    def audio_full_filename(self, idx):
-        return os.path.join(self.config["data_folder"], self.filenames[idx])
+        # If user provided categories for grouping the classes, we need to merge the labels
+        if config["categories"][0] != "none":
+            # Get the indices of the classes in each category for each category
+            # Example: classes = ['speech', 'glassbreak', 'baby_cry', 'smoke_alarm']
+            #          categories = ['speech.baby_cry', 'glassbreak.smoke_alarm']
+            #          indices = [[0, 2], [1, 3]]
+            indices = [[idx
+                        for idx, a_class in enumerate(self.classes)
+                        for category_class in category.split('.')
+                        if a_class == category_class]
+                       for category in config["categories"]]
+            new_labels = np.empty((self.labels.shape[0], len(config["categories"])))
+            self.labels = self.labels.numpy()
+            for category_idx, category_class_indices in enumerate(indices):
+                new_labels[:, category_idx] = self.labels[:, category_class_indices].max(axis=1)
+            self.labels = torch.from_numpy(new_labels.astype(np.float32))
+            self.classes = config["categories"]
+
+    def audio_full_filename(self, filename):
+        return os.path.join(self.config["data_folder"], filename)
 
     def __getitem__(self, index):
+        if self.config["multi_loudness"]:
+            return (np.random.random() * 0.4 + 0.6) * self.features[index], self.labels[index]
         return self.features[index], self.labels[index]
 
     def __len__(self):

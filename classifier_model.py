@@ -99,7 +99,9 @@ class ChannelWiseFC2d(nn.Module):
             "in_features": 1,  # Number of input features
             "out_features": 1,
             "use_bias": True,
-            "activation": "sig"
+            "activation": "sig",
+
+            "sort": False
         }
         return config
 
@@ -108,6 +110,7 @@ class ChannelWiseFC2d(nn.Module):
         self.in_features = config["in_features"]
         self.out_features = config["out_features"]
         self.in_channels = config["in_channels"]
+        self.sort = config["sort"]
         self.FCs = nn.ModuleList([nn.Linear(self.in_features, self.out_features, config["use_bias"])
                                   for _ in range(config["in_channels"])])
         self.activation = ACTIVATION_DICT[config["activation"]]()
@@ -116,7 +119,11 @@ class ChannelWiseFC2d(nn.Module):
         x = x.view(x.shape[0], x.shape[1], -1)
         y = torch.zeros((x.shape[0], self.in_channels, self.out_features), device=x.device)
         for channel in range(self.in_channels):
-            y[:, channel, :] = self.FCs[channel](x[:, channel, :])
+            if self.sort:
+                z, _ = torch.sort(x[:, channel, :], dim=1, descending=True)
+                y[:, channel, :] = self.FCs[channel](z)
+            else:
+                y[:, channel, :] = self.FCs[channel](x[:, channel, :])
         y = self.activation(y)
         return y
 
@@ -133,15 +140,15 @@ class DepthWiseCNNClassifier(nn.Module):
 
             "conv_i_c": [16],  # input channels
             "conv_o_c": [16],  # output channels
-            "conv_k_f": [3],  # kernel size on frequency axis
-            "conv_k_t": [3],  # kernel size on time axis
-            "conv_s_f": [1],  # stride on frequency axis
-            "conv_s_t": [1],  # stride on time axis
+            "conv_k_f": [5],  # kernel size on frequency axis
+            "conv_k_t": [5],  # kernel size on time axis
+            "conv_s_f": [3],  # stride on frequency axis
+            "conv_s_t": [3],  # stride on time axis
             "conv_pad_type": "zero",
             "conv_p_f": [0],  # padding on frequency axis
             "conv_p_t": [0],  # padding on time axis
 
-            "conv_groups": [1],  # Number of feature maps in each "group"
+            "conv_groups": [16],  # Number of feature maps in each "group"
 
             "pooling_type": "None",
             "pool_k_f": [0],
@@ -153,7 +160,7 @@ class DepthWiseCNNClassifier(nn.Module):
             "pool_p_t": [0],
 
             "dropout_type": "1D",  # 1D or 2D (channel wise) dropout
-            "dropout_probs": [0.0],  # dropout probabilities
+            "dropout_probs": [0.1],  # dropout probabilities
             "use_batch_norm": False,  # If True, batch norm is used between convolution and activation
             "activations": ["lr"]
         })
@@ -192,28 +199,29 @@ class ChannelWiseRNNClassifier(nn.Module):
     def __init__(self, config):
         super(ChannelWiseRNNClassifier, self).__init__()
         self.hidden_size = config["hidden_size"]
+        self.n_channels = config["num_channels"]
 
         cell_type_dict = {"GRU": nn.GRU, "LSTM": nn.LSTM, "RNN": nn.RNN}
-        self.RNNs = nn.ModuleList([cell_type_dict[config["RNN_cell_type"]](input_size=config["input_size"],
-                                                                           hidden_size=config["hidden_size"],
-                                                                           num_layers=config["num_layers"],
-                                                                           bias=config["use_bias"],
-                                                                           batch_first=config["batch_first"],
-                                                                           dropout=config["dropout"],
-                                                                           bidirectional=config["bidirectional"])
-                                   for _ in range(config["num_channels"])])
+        self.RNN = cell_type_dict[config["RNN_cell_type"]](input_size=config["input_size"],
+                                                           hidden_size=config["hidden_size"],
+                                                           num_layers=config["num_layers"],
+                                                           bias=config["use_bias"],
+                                                           batch_first=config["batch_first"],
+                                                           dropout=config["dropout"],
+                                                           bidirectional=config["bidirectional"])
 
         self.ChannelWiseFC = ChannelWiseFC2d({"in_channels": config["num_channels"],
                                               "in_features": config["hidden_size"],
                                               "out_features": 1,
                                               "use_bias": True,
-                                              "activation": "sig"})
+                                              "activation": "sig",
+                                              "sort": False})
 
     def forward(self, x):
         x = x.permute(0, 1, 3, 2)  # permute time and frequency axis, to have axis in position required by pytorch RNNs
         y = torch.zeros((x.shape[0], x.shape[1], self.hidden_size), device=x.device)
-        for channel, rnn in enumerate(self.RNNs):
-            _, y[:, channel, :] = rnn(x[:, channel, :, :])
+        for channel in range(self.n_channels):
+            _, y[:, channel, :] = self.RNN(x[:, channel, :, :])
         # y = (y + 1.0) / 2.0  # rescale output of tanh to [0, 1] to have probability output
         y = self.ChannelWiseFC(y)
         return y

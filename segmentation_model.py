@@ -3,7 +3,22 @@ import torch.nn as nn
 
 from mask_model import find_mask_model_class
 from classifier_model import find_classifier_model_class
-from pcen import PCEN
+from pcen import PCENLayer, MultiPCENlayer
+
+
+class PredictionReScaler(nn.Module):
+    """
+        Learns a single weight to rescale the output of a 'global pooling' type classifier, as it depends on the
+        typical area in spectrogram representation of a class
+    """
+
+    def __init__(self, input_shape):
+        super(PredictionReScaler, self).__init__()
+        # Initialize the weights around 1
+        self.rescaling_weights = nn.Parameter(torch.randn(input_shape) * torch.log(torch.tensor(1 / input_shape)) + 1.0)
+
+    def forward(self, x):
+        return torch.sigmoid(x * self.rescaling_weights)
 
 
 class SegmentationModel(nn.Module):
@@ -25,8 +40,14 @@ class SegmentationModel(nn.Module):
                        for key, value in find_mask_model_class(mask_model_type).default_config().items()}
         class_config = {"class_{}".format(key): value
                         for key, value in find_classifier_model_class(classifier_model_type).default_config().items()}
-        pcen_config = {"train_pcen": False, "train_pcen_s": [0.0], "train_pcen_eps": 1e-6}
-        return {**pcen_config, **mask_config, **class_config}
+        pcen_config = {"train_pcen": False,
+                       "train_multi_pcen": False, "n_multi_pcen": 0,
+                       "train_pcen_per_band_param": False,
+                       "train_pcen_use_s": True, "train_pcen_s": [0.0],
+                       "train_pcen_per_band_filter": False,
+                       "train_pcen_b": [0.0], "train_pcen_a": [1.0],
+                       "train_pcen_eps": 1e-6}
+        return {**pcen_config, **mask_config, **class_config, "rescale_classification": False}
 
     def __init__(self, config, input_shape, n_classes):
         super(SegmentationModel, self).__init__()
@@ -34,9 +55,17 @@ class SegmentationModel(nn.Module):
         config["mask_conv_o_c"][-1] = n_classes
 
         if config["train_pcen"]:
-            self.pcen = PCEN(input_shape[-2],
-                             config["train_pcen_s"] if config["train_pcen_s"][0] != 0.0 else None,
-                             config["train_pcen_eps"])
+            if config["train_multi_pcen"]:
+                self.pcen = MultiPCENlayer(config["n_multi_pcen"], config["train_pcen_eps"])
+                config['mask_conv_i_c'][0] = config["n_multi_pcen"]
+            else:
+                self.pcen = PCENLayer(config["train_pcen_per_band_param"], input_shape[-2],
+                                      config["train_pcen_use_s"], config["train_pcen_s"],
+                                      config["train_pcen_per_band_filter"],
+                                      config["train_pcen_b"], config["train_pcen_a"],
+                                      config["train_pcen_eps"])
+        else:
+            self.pcen = None
 
         # Instantiate with sizes, etc...
         self.mask_model = find_mask_model_class(config["mask_model_type"])(
@@ -44,6 +73,8 @@ class SegmentationModel(nn.Module):
 
         # Adapt parameters from output of mask model to input of classifier model
         x = torch.zeros((1,) + input_shape)  # add batch dimension
+        if self.pcen is not None:
+            x = self.pcen(x)
         x = self.mask_model(x)
         config["class_input_shape"] = tuple(x.shape)
         if config["classifier_model_type"] == "ChannelWiseFC2d":
@@ -59,10 +90,17 @@ class SegmentationModel(nn.Module):
         self.classifier_model = find_classifier_model_class(config["classifier_model_type"])(
             {key.replace('class_', ''): value for key, value in config.items()})
 
+        if config["rescale_classification"]:
+            self.rescaler = PredictionReScaler(n_classes)
+        else:
+            self.rescaler = None
+
     def forward(self, x):
-        if hasattr(self, "pcen"):
+        if self.pcen is not None:
             x = self.pcen(x)
         x = self.mask_model(x)
         masks = x
         labels = self.classifier_model(x)
+        if self.rescaler is not None:
+            labels = self.rescaler(labels)
         return labels.squeeze(), masks

@@ -86,41 +86,162 @@ def no_arti_pcen(S, sr=22050, hop_length=512, gain=0.98, bias=2, power=0.5,
     return (S * smooth + bias) ** power - bias ** power
 
 
-class PCEN(nn.Module):
+class PCENLayer(nn.Module):
 
-    def __init__(self, in_f_size, s=None, eps=1e-6):
+    def __init__(self, per_band_param, in_f_size, use_s, s, per_band_filter, b, a, eps=1e-6):
         super().__init__()
 
-        self.log_alpha = nn.Parameter((torch.randn(in_f_size) * 0.1 + 1.0).log_())
-        self.log_delta = nn.Parameter((torch.randn(in_f_size) * 0.1 + 1.0).log_())
-        self.log_r = nn.Parameter((torch.randn(in_f_size) * 0.1 + 1.0).log_())
-
-        if s is None:  # Default values
-            self.s = [0.015, 0.02, 0.04, 0.08]
+        self.per_band_param = per_band_param
+        if per_band_param:
+            # Pick random values around default for each frequency bin
+            # Parameters in [0, 1] are parametrized by a sigmoid, parameters in [0, +inf) are parametrized by log
+            self.i_sig_alpha = (torch.randn(in_f_size) * 0.05 + 0.9).clamp(min=0.1, max=0.995)
+            self.i_sig_alpha = nn.Parameter(torch.log(self.i_sig_alpha / (1.0 - self.i_sig_alpha)))
+            self.log_delta = nn.Parameter((torch.randn(in_f_size) * 0.1 + 2.0).clamp(min=1.0, max=3.0).log_())
+            self.i_sig_r = (torch.randn(in_f_size) * 0.05 + 0.5).clamp(min=0.1, max=0.9)
+            self.i_sig_r = nn.Parameter(torch.log(self.i_sig_r / (1.0 - self.i_sig_r)))
         else:
+            self.i_sig_alpha = nn.Parameter(torch.log(torch.tensor(0.98 / (1.0 - 0.98))))  # sigmoid^-1(0.98)
+            self.log_delta = nn.Parameter(torch.tensor(2.0).log_())
+            self.i_sig_r = nn.Parameter(torch.tensor(0.0))  # sigmoid(0.0) = 0.5
+
+        self.use_s = use_s
+        if use_s:
             self.s = s
-        self.z_ks = nn.Parameter(torch.randn((len(s), in_f_size)) * 0.1 + np.log(1 / len(s)))
+            self.z_ks = nn.Parameter(torch.randn((len(s), in_f_size)) * 0.1 + np.log(1 / len(s)))
+        else:
+            self.per_band_filter = per_band_filter
+            if per_band_filter:
+                self.b = nn.Parameter(torch.randn((in_f_size, len(b))) * np.log(1 / len(b)) + torch.tensor(b))
+                self.b = nn.Parameter(torch.randn((in_f_size, len(a))) * np.log(1 / len(a)) + torch.tensor(a))
+            else:
+                self.b = nn.Parameter(torch.tensor(b))
+                self.a = nn.Parameter(torch.tensor(a))
 
         self.eps = eps
 
     def forward(self, x):
-        alpha = self.log_alpha.exp().unsqueeze(0).unsqueeze(0).unsqueeze(-1).expand(x.shape[0], x.shape[1], -1,
-                                                                                    x.shape[-1])
-        delta = self.log_delta.exp().unsqueeze(0).unsqueeze(0).unsqueeze(-1).expand(x.shape[0], x.shape[1], -1,
-                                                                                    x.shape[-1])
-        r = self.log_r.exp().unsqueeze(0).unsqueeze(0).unsqueeze(-1).expand(x.shape[0], x.shape[1], -1, x.shape[-1])
-        w_ks = (self.z_ks.exp() / self.z_ks.exp().sum()) \
-            .unsqueeze(1).unsqueeze(1).unsqueeze(-1).expand(-1, x.shape[0], x.shape[1], -1, x.shape[-1])
+        if self.per_band_param:
+            alpha = self.i_sig_alpha.sigmoid().unsqueeze(0).unsqueeze(0).unsqueeze(-1).expand(x.shape[0], x.shape[1],
+                                                                                              -1, x.shape[-1])
+            delta = self.log_delta.exp().unsqueeze(0).unsqueeze(0).unsqueeze(-1).expand(x.shape[0], x.shape[1], -1,
+                                                                                        x.shape[-1])
+            r = self.i_sig_r.sigmoid().unsqueeze(0).unsqueeze(0).unsqueeze(-1).expand(x.shape[0], x.shape[1], -1,
+                                                                                      x.shape[-1])
+        else:
+            alpha = self.i_sig_alpha.sigmoid().expand_as(x)
+            delta = self.log_delta.exp().expand_as(x)
+            r = self.i_sig_r.sigmoid().expand_as(x)
 
-        smoothers = torch.stack([
-            torch.tensor(scipy.signal.filtfilt([s], [1, s - 1], x, axis=-1, padtype=None).astype(np.float32),
-                         device=x.device) for s in self.s])
-        M = (smoothers * w_ks).sum(dim=0)
+        if self.use_s:
+            w_ks = (self.z_ks.exp() / self.z_ks.exp().sum(dim=0)) \
+                .unsqueeze(1).unsqueeze(1).unsqueeze(-1).expand(-1, x.shape[0], x.shape[1], -1, x.shape[-1])
+
+            smoothers = torch.stack([
+                torch.tensor(scipy.signal.filtfilt([s], [1, s - 1], x, axis=-1, padtype=None).astype(np.float32),
+                             device=x.device) for s in self.s])
+            M = (smoothers * w_ks).sum(dim=0)
+        else:
+            if self.per_band_filter:  # replicate b and a values for each freq bin
+                M = torch_filtfilt(self.b, self.a, x)
+            else:
+                M = torch_filtfilt(self.b.unsqueeze(0).expand(x.shape[2], -1),
+                                   self.a.unsqueeze(0).expand(x.shape[2], -1),
+                                   x)
 
         # Description in paper
         # return (x / (M + self.eps).pow(alpha) + delta).pow(r) - delta.pow(r)
         # More stable version
         M = torch.exp(-alpha * (float(np.log(self.eps)) + torch.log1p(M / self.eps)))
+        result = (x * M + delta).pow(r) - delta.pow(r)
+
+        return result
+
+
+def torch_lfilter(b, a, x):
+    """ a, b must have shape [(c,) f, *] """
+    P = b.shape[-1]
+    Q = a.shape[-1]
+    b_flip = torch.flip(b, [b.dim() - 1])
+    a_flip = torch.flip(a, [a.dim() - 1])
+    init_steps = np.max([P, Q])
+    sum_length_diff = np.abs(Q - P)
+
+    # P_strided_x = x.unfold(-1, P, 1).permute(0, 1, 3, 2, 4)  # move frequency to before last position to match b shape
+    # P_sum = torch.sum(b_flip * P_strided_x, dim=-1).permute(0, 1, 3, 2).split(1, -1)  # move frequency back
+    P_strided_x = x.unfold(-1, P, 1).permute(0, 3, 1, 2, 4)
+    P_sum = torch.sum(b_flip * P_strided_x, dim=-1).permute(0, 2, 3, 1).split(1, -1)
+    result = []
+    for step in range(init_steps):
+        if b.dim() == 3:
+            result.append(x[..., step].expand(-1, b.shape[0], -1))
+        else:
+            result.append(x[..., step])
+    for step in range(1 + sum_length_diff, x.shape[-1]):
+        result.append(P_sum[step].squeeze(-1)
+                      - torch.sum(a_flip[..., :-1] * torch.stack(result[-Q + 1:], -1), dim=-1))
+    return torch.stack(result, -1) / a_flip[..., -1].unsqueeze(-1)
+
+
+def torch_filtfilt(b, a, x):
+    last_dim = x.dim() - 1
+    y = torch_lfilter(b, a, x)
+    z = y.flip(last_dim)
+    zz = torch_lfilter(b, a, z)
+    return zz.flip(last_dim)
+
+
+# def torch_lfilter(b, a, x):
+#     M = torch.zeros(x.shape, device=x.device)
+#     b_last_dim = len(b.shape) - 1
+#     a_last_dim = len(a.shape) - 1
+#     P = b.shape[b_last_dim] - 1
+#     Q = a.shape[a_last_dim] - 1
+#     b_flip = torch.flip(b, [b_last_dim])
+#     a_flip = torch.flip(a, [a_last_dim])
+#     init_steps = np.max([P, Q])
+#
+#     M[..., :init_steps] = x[..., :init_steps]
+#     for step in range(init_steps, x.shape[-1]):
+#         M[..., step] = M[..., step] + torch.sum(b_flip * x[..., step - P:step + 1], dim=-1)\
+#                        - torch.sum(a_flip[..., :-1] * M[..., step - Q:step], dim=-1)
+#     return M / a_flip[..., -1].unsqueeze(-1)
+
+
+class MultiPCENlayer(nn.Module):
+    def __init__(self, n_pcen, eps=1e-6):
+        super(MultiPCENlayer, self).__init__()
+
+        self.n_pcen = n_pcen
+
+        self.i_sig_alpha = torch.log(torch.tensor(0.98 / (1.0 - 0.98)))
+        self.i_sig_alpha = nn.Parameter(self.i_sig_alpha * (1.0 + torch.rand(n_pcen)*0.1))
+        self.log_delta = torch.tensor(2.0).log_()
+        self.log_delta = nn.Parameter(self.log_delta * (1.0 + torch.rand(n_pcen)*0.1))
+        self.i_sig_r = torch.tensor(0.0)
+        self.i_sig_r = nn.Parameter(self.i_sig_r * (1.0 + torch.rand(n_pcen)*0.1))
+
+        self.i_sig_s = torch.log(torch.tensor(0.04 / (1.0 - 0.04)))
+        self.i_sig_s = nn.Parameter(self.i_sig_s * (1.0 + torch.rand(n_pcen)*0.1))
+
+        self.i_sig_eps = nn.Parameter(torch.log(torch.tensor(eps / (1.0 - eps))))
+
+    def forward(self, x):
+        alpha = self.i_sig_alpha.sigmoid().unsqueeze(0).unsqueeze(-1).unsqueeze(-1).expand(x.shape[0], -1,
+                                                                                           x.shape[2], x.shape[3])
+        delta = self.log_delta.exp().unsqueeze(0).unsqueeze(-1).unsqueeze(-1).expand(x.shape[0], -1,
+                                                                                     x.shape[2], x.shape[3])
+        r = self.i_sig_r.sigmoid().unsqueeze(0).unsqueeze(-1).unsqueeze(-1).expand(x.shape[0], -1,
+                                                                                   x.shape[2], x.shape[3])
+        b = self.i_sig_s.sigmoid().unsqueeze(-1).unsqueeze(-1).expand(-1, x.shape[2], -1)
+        a = torch.cat((torch.ones((self.n_pcen, x.shape[2], 1), device=x.device, dtype=x.dtype),
+                       self.i_sig_s.sigmoid().unsqueeze(-1).unsqueeze(-1).expand(-1, x.shape[2], -1) - 1.0),
+                      dim=-1)
+        eps = self.i_sig_eps.sigmoid()
+
+        M = torch_filtfilt(b, a, x)
+
+        M = torch.exp(-alpha * (torch.log(eps) + torch.log1p(M / eps)))
         result = (x * M + delta).pow(r) - delta.pow(r)
 
         return result
