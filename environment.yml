@@ -9,7 +9,9 @@ dependencies:
   - numpy
   - matplotlib
   - scipy
-  - pytorch torchvision cudatoolkit=9.0
+  - pytorch
+  - torchvision
+  - cudatoolkit=9.0
   - scikit-learn
   - pandas
   - librosa
