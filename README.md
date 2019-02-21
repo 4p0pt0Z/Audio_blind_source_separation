@@ -9,7 +9,7 @@ Master thesis Fall 2018: Neural Network based Audio Blind source Separation for 
 * pytorch
 * matplotlib
 * scikit-learn
-* librosa (installed with pip)
+* librosa
 * pandas
 * jupyter lab (visualization)
 * seaborn (visualization)
@@ -17,8 +17,6 @@ Master thesis Fall 2018: Neural Network based Audio Blind source Separation for 
 * h5py
 * pyyaml
 * mir_eval (installed with pip) for audio separation performance measurements
-* cython (pip)  # not used
-* pyroomacoustics (pip)  # not used
 * iterative-stratification (pip install, for stratified multilabel data split)
 
 ### Replicate Blind Source Segmentation on weakly labelled data paper
@@ -65,7 +63,7 @@ Training can be launched with a command similar to :
 `--use_batch_norm True \ `  
 `--n_epochs 500 \ `  
 `--scheduler_type multiStepLR --scheduler_gamma 1.0 --scheduler_milestones 150 300 \ `   
-`--dev_every 5 \ `  
+`--test_every 5 \ `  
 `--learning_rate 0.0001 \ `    
 `--weight_decay 0.0 \ `   
 `--metric f1-score \ `   

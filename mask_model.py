@@ -1,29 +1,49 @@
 import torch.nn as nn
-from VGG_like_CNN_model import VGGLikeCNN
+from VGG_like_CNN_model import BlockFreqTimeCNN
 
 
 def find_mask_model_class(model_type):
-    """
-        Get the class of a model from an string indentifier
+    """Helper function returning the class (in the python sense) corresponding to a mask model identified by a string.
+
     Args:
         model_type (str): Identifier for the model Class
 
     Returns:
         Class implementing the desired model
     """
+
     if model_type == "VGGLikeMaskModel":
         return VGGLikeMaskModel
-    else:
+    else:  # Only per-block CNN available so far.
         raise NotImplementedError("The mask segmentation model type " + model_type + " is not available.")
 
 
 class VGGLikeMaskModel(nn.Module):
+    r"""Implements the mask model as a convolutional neural network.
+
+        The mask model is a CNN, its architecture is a stack of blocks, each containing a convolution layer (after
+        padding), eventually a batch normalization layer, a dropout layer, an activation function and eventually a
+        pooling layer.
+
+        The implementation of a block CNN is done in :class:`VGG_like_CNN_model.VGGLikeCNN`. This class mainly
+        defines suitable values for the CNN hyper-parameters when used to produce a segmentation mask.
+    """
 
     @classmethod
     def default_config(cls):
-        config = VGGLikeCNN.default_config()
+        r"""Provides a dictionary with all the tunable hyper-parameters of the mask model.
+
+            This function gets the hyper-parameters from :class:`VGG_like_CNN_model.VGGLikeCNN` and simply updates
+            their values to defaults that are more suited for a model used to produce a segmentation mask.
+
+        Returns:
+            A dictionary with the default values for all the hyper-parameters for a CNN used for producing
+            segmentation masks.
+        """
+
+        config = BlockFreqTimeCNN.default_config()
         config.update({
-            "n_blocs": 6,
+            "n_blocks": 6,
 
             "freq_coord_conv": False,
 
@@ -56,11 +76,22 @@ class VGGLikeMaskModel(nn.Module):
         return config
 
     def __init__(self, config):
+        r"""Constructor: initializes the CNN layers.
+
+            A mask model final activation should be either sigmoid or softmax. It is silently imposed here that the
+            final block activation be sigmoid, except when user specifically asks for softmax.
+            The output values of the mask model should not be influenced by dropout (to not mess up with the
+            classifier model input), so the dropout probability of the last block is set to 0.
+
+        Args:
+            config (dict): configuration
+        """
+
         super(VGGLikeMaskModel, self).__init__()
-        if config["activations"][config["n_blocs"]-1] != 'softmax':
-            config["activations"][config["n_blocs"] - 1] = "sig"  # last activations set to sigmoid
-        config["dropout_probs"][config["n_blocs"]-1] = 0.0  # dropout on "masks" is 0.0
-        self.net = VGGLikeCNN(config)
+        if config["activations"][config["n_blocks"] - 1] != 'softmax':
+            config["activations"][config["n_blocks"] - 1] = "sig"  # last activations set to sigmoid
+        config["dropout_probs"][config["n_blocks"] - 1] = 0.0  # dropout on "masks" is 0.0
+        self.net = BlockFreqTimeCNN(config)
 
     def forward(self, x):
         return self.net(x)

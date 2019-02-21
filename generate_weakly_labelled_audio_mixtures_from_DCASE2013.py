@@ -10,9 +10,9 @@ from helpers import str2bool
 
 def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folder, length, max_event, overlap, wn_ratio,
                          sampling_rate):
-    """
-        Generates mixed audio files from the input audio files. The generated files are saved in the output folder,
-        with a '.csv' file keeping track of the classes present in each mix.
+    r"""Generates mixed audio files from the input audio files. The generated files are saved in the output folder,
+        with a '.csv' file keeping track of the classes present in each mix. The sources include in the mix are saved
+        in a folder having the same name as the mix.
 
         Assumption: the length of the mix should be greater than the length of the audio events to put in the mix
     Args:
@@ -26,10 +26,9 @@ def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folde
         overlap (bool): Whether or not the audio events can overlap in the remixed files
         wn_ratio (float): Energy ratio between white noise and audio signal
         sampling_rate (int): Sampling rate for the mixed audio files
-
     """
 
-    header = ["filename"] + classes
+    header = ["filename"] + classes  # header of the csv file
 
     total_n_events = len(audio_files)
     mixed_audio_length = int(np.ceil(sampling_rate * length))
@@ -71,8 +70,9 @@ def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folde
                             for class_idx, class_name in enumerate(classes):
                                 if audio_files[idx].startswith(class_name):
                                     ground_truth_events[class_idx][start:] += audio_data[idx][event_start_time:
-                                                                                             event_start_time +
-                                                                                             mixed_audio_length - start]
+                                                                                              event_start_time +
+                                                                                              mixed_audio_length -
+                                                                                              start]
                             # No more events will fit in this mix: remove the rest of the labels.
                             events_idx = events_idx[:idx_idx + 1]
                             break
@@ -124,6 +124,15 @@ def generate_mixed_files(audio_files, audio_data, classes, n_files, output_folde
 
 
 def main():
+    r"""DCASE 2013 proposed a competition to detect and classify "office noises". This script implements a procedure
+        to create audio mixture from separated audio events sound files.
+
+        The script splits the available audio events in training, testing and validation sets. Then audio mixtures
+        are made from the events for each set.
+
+        (Subtask 1 of Event Detection problem at: http://c4dm.eecs.qmul.ac.uk/sceneseventschallenge/description.html)
+
+    """
     parser = argparse.ArgumentParser(allow_abbrev=False,
                                      description="Generate audio files by mixing audio events of the DCASE 2013 sound "
                                                  "event detection dataset (task 2). A csv file is also generated "
@@ -166,6 +175,7 @@ def main():
     classes = ["alert", "clearthroat", "cough", "doorslam", "drawer", "keyboard", "keys", "knock", "laughter", "mouse",
                "pageturn", "pendrop", "phone", "printer", "speech", "switch"]
 
+    # train, development and validation split
     tr_audio_files = []
     dev_audio_files = []
     test_audio_files = []

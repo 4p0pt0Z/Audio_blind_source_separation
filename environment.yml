@@ -1,0 +1,18 @@
+name: abss
+channels:
+  - anaconda
+  - conda-forge
+  - pytorch
+  - trent-b
+dependencies:
+  - python
+  - numpy
+  - matplotlib
+  - scipy
+  - pytorch torchvision cudatoolkit=9.0
+  - scikit-learn
+  - pandas
+  - librosa
+  - h5py
+  - pyyaml
+  - iterative-stratification
