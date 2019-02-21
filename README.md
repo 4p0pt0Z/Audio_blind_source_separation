@@ -42,8 +42,8 @@ The audio events of this set (look for DCASE2013_SED/singlesounds_stereo/singles
 `generate_weakly_labelled_audio_mixtures_from_DCASE2013.py` script to create audio mixtures.
 * [TUT Rare Sound Event Data set](http://www.cs.tut.fi/sgn/arg/dcase2017/challenge/task-rare-sound-event-detection)
 This data set is used in [1] and the mixtures are create using the 
-[code from the authors](https://github.com/qiuqiangkong/ICASSP2018_joint_separation_classification). (`runme.sh` 
-produces the features in `/mixed_audio` and the labels in `/mixed_yaml`)
+[code from the authors](https://github.com/qiuqiangkong/ICASSP2018_joint_separation_classification). (theire 
+`runme.sh` script produces the features in `/mixed_audio` and the labels in `/mixed_yaml`)
 * [Audioset](https://research.google.com/audioset/) Recordings from a few classes from Audioset have been re-labelled by 
 [CloudFactory](https://www.cloudfactory.com/). These new labels can be used to generate smaller recordings with labels 
 for training using `generate_audioset_segments.py` 
@@ -52,25 +52,26 @@ for training using `generate_audioset_segments.py`
 ### Code Framework
 The code framework architecture is as follows:
 
-![alt text](https://github.com/4p0pt0Z/Audio_blind_source_separation/blob/master/diagram_readme.png "Code Organization")
+![alt text](https://github.com/4p0pt0Z/Audio_blind_source_separation/blob/master/diagram_code.png "Code Organization")
 
-The main executable parses the user arguments and launches 3 possible behavior:
+The `main` script parses the user arguments and launches 3 possible behavior:
 * train: a model is trained, either from scratch or using a saved model in a checkpoint and resuming the training
 * evaluate: a model is loaded from checkpoint and the classification performances are evaluated on the validation set
 * separate: a model is loaded from checkpoint and used to perform audio source separation on the files of the validation
 set. The performances of the separation are then measured.
 
-For the training and evalution part, the class TrainingManager is used. This class has a separation model and a data set 
+For the training and evalution part, the class `TrainingManager` is used. This class has a separation model and a data set 
 as member, and implements the training, evaluation and saving routines.
 
-The Separation model is composed of 3 parts: 
+The Separation model (class `SeparationModel` in `separation_model.py`) is composed of 3 parts: 
 * PCEN layer (optional). A layer implementing the trainable Per-channel Energy Normalization processing of a spectrogram
 * Mask model: A CNN in charge of producing the separation masks
 * Classifier model: A model trained to classify the separation masks.
 
-The common routines of audio processing (STFT, ISTFT, mel scaling, etc...) are implemented in AudioDataSet. This class 
-also inherits from torch.data.DataSet and handles the data access during training. 3 specialized classes inherit from 
-AudioDataSet, implementing specific methods for handling the audio mixtures from 3 data sets.
+The common routines of audio processing (STFT, ISTFT, mel scaling, etc...) are implemented in `AudioDataSet` 
+(in `data_set.py`). This class also inherits from torch.data.DataSet and handles the data access during training. 
+3 specialized classes inherit from AudioDataSet, implementing specific methods for handling the audio mixtures from 3 
+data sets.
 
 The AudioSeparator class is used to use a trained model to perform audio separation. It can be used to perform audio 
 separation using a trained model, for all files in a validation data set. Then, the audio separation performances can 
@@ -83,12 +84,19 @@ Miniconda can be installed from [here](https://conda.io/en/latest/miniconda.html
 
 The dependencies for this project are indicated in environment.yml.
 To build a new environment for this project use:
-`conda env create -f environment.yml`
 
-Then activate the environment with `conda activate abss` (source activate abss on Linux)
+`conda env create -f environment.yml`  
+
+(tested on windows and linx, on mac pytorch binaries do not come with cuda support, so the pytorch installation will 
+probably fail)
+
+Then activate the environment with   
+`conda activate abss`  
+(source activate abss on Linux)
 
 Unfortunately, the library `mir_eval` used to compute separation performances does not have conda packages.
-Once the `abss` environment is ready and activated, you can install mir_eval using `pip install mir_eval`.  
+Once the `abss` environment is ready and activated, you can install mir_eval using  
+`pip install mir_eval`  
 
 
 ### Command line arguments
@@ -104,17 +112,22 @@ Most tunable hyper-parameters of the audio separation framework are available as
 arguments are always accessible through the `default_config` method of class. To change the parameters of an object, 
 look at its `default_config` method, find the name of the parameter and use it as command line argument.
 
-Example: The TrainingManager class handles the training of a model. Its `default_config` method contains an entry for 
+Example: The `TrainingManager` class handles the training of a model. Its `default_config` method contains an entry for 
 the `learning_rate` parameter. To use a learning rate of 0.1: use `--learning_rate 0.1` as a command line argument.
 
 Exceptions: The separation model contains 2 separated models: the mask model and the classifier model. These models can 
 have the same CNN architecture, therefore in order to avoid confusion between the parameters of these models, the 
-prefixes `mask_` or `class_` must be used.
-
+prefixes `mask_` or `class_` must be used.  
 Example: We use a classifier model of type `GlobalWeightedRankPooling2d`. To change the value of its parameter `dc` to 
 0.9, use: `--class_dc 0.9`.  
 To change the number of feature maps to use in the mask model to 48 for the first 3 layers, use: 
 `--mask_conv_i_c 48 48 48`.
+
+In `evaluate` mode, only the path to the model checkpoint is required. The model and data set parameters will be read 
+from the checkpoint. 
+
+In `separate` mode, the path to the model checkpoint is required, as well as a path to a folder to save the separated 
+audio tracks.
 
 Full example:
 
@@ -145,4 +158,23 @@ python -m main --mode train
 --use_cuda True --gpu_no 1 
 --save_path test_model.ckpt
 ```
+ 
+```
+python -m main 
+--mode evaluate 
+--checkpoint_path /home/vincent/trash/Audio_blind_source_separation/results/test.ckpt
+```
+
+```
+python -m main 
+--mode separate  
+--checkpoint_path /home/vincent/trash/Audio_blind_source_separation/results/test.ckpt
+--separated_audio_folder path_to_folder_for_separated_audio
+```
+
+##### Thesis results in section TUT Rare Sound Events data set
+The models used in this section were trained using the bash script `run_thesis_results.sh`.
+
+The masks and spectrogram figures of the thesis were obtained with the `separation_examples_and_compute_metrics.py` 
+called on these models.
  
