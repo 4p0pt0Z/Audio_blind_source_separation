@@ -83,19 +83,8 @@ def parse_arguments():
 
     # First parse the execution mode
     parser = argparse.ArgumentParser(allow_abbrev=False,
-                                     description="Training framework in pytorch. \n "
-                                                 "Available audio processing parameters are the members of the "
-                                                 "'default_config' dictionary of class of the command line argument "
-                                                 "'data_set_type' (in data_set.py)\n"
-                                                 "Available models parameters are the members of the 'default_config' "
-                                                 "of the class of the command line argument '**_model_type'"
-                                                 " (in **_model.py)\n"
-                                                 "Available training parameters (optimizer, learning rate scheduler, "
-                                                 "loss function, metric...) are the members of the 'default_config' "
-                                                 "dictionary of the 'TrainingManager' class in 'train.py'\n"
-                                                 "Passed arguments update the default values in the default_config "
-                                                 "dictionarries.\n"
-                                                 "See README.md for more information")
+                                     description="Audio separation framework in pytorch. \n "
+                                                 "See README.md for information about the command line arguments.")
     parser.add_argument("--mode", type=str, required=True,
                         help="Which mode of the script to execute: train for training a model, evaluate for evaluating "
                              "a model, and separate to generate source separated audio files")
