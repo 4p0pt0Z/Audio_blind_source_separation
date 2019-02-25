@@ -94,7 +94,7 @@ class SeparationModel(nn.Module):
 
         # Makes sure that the mask model last layer has as many channels as there are classes to predict
         # 1 channel <-> 1 mask <-> 1 class.
-        config["mask_conv_o_c"][config['n_blocks']-1] = n_classes
+        config["mask_conv_o_c"][config['mask_n_blocks']-1] = n_classes
 
         # If a trainable pcen is requested
         if config["train_pcen"]:

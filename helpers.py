@@ -1,4 +1,5 @@
 import argparse
+import math
 
 
 def str2bool(v):
@@ -16,3 +17,12 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def next_power_of_2(x):
+    """Find the first power of 2 greater than x (x positive)"""
+    assert x >= 0
+    if x == 0:
+        return 1
+    else:
+        return 2 ** math.ceil(math.log2(x))

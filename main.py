@@ -160,5 +160,6 @@ def parse_arguments():
 
 if __name__ == '__main__':
     r"""Parse user arguments, then launch main"""
+    torch.multiprocessing.set_start_method('spawn', force=True)  # required or else multi-processing throws cuda errors
     mode, conf_dict = parse_arguments()
     main(mode, conf_dict)

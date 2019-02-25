@@ -9,12 +9,15 @@ import concurrent.futures
 import torch
 import torch.utils.data as torchdata
 
+import math
 import numpy as np
 import pandas as pd
 import scipy
 
 import librosa
 from pcen import no_arti_pcen
+
+from helpers import next_power_of_2
 
 
 def find_data_set_class(data_set_type):
@@ -42,6 +45,8 @@ def find_data_set_class(data_set_type):
         return ICASSP2018JointSeparationClassificationDataSet
     elif data_set_type == "AudiosetSegments":
         return AudiosetSegments
+    elif data_set_type == "AudiosetSegmentsOnDisk":
+        return AudiosetSegmentsOnDisk
     else:
         raise NotImplementedError("Data set type " + data_set_type + " is not available.")
 
@@ -158,6 +163,54 @@ class AudioDataSet(torchdata.Dataset):
         """
 
         return tuple(self.features[0].shape)
+
+    def get_features(self, idx):
+        r"""Get the features of the example 'idx'
+
+        Args:
+            idx (int): index of the example
+
+        Returns:
+            torch.tensor. Shape: [Channel=1, Frequency, Time]. Features of the example indexed 'idx'
+        """
+
+        return self.features[idx]
+
+    def get_magnitude(self, idx):
+        r"""Get the energy spectrogram (stft magnitude) of the example 'idx'
+
+        Args:
+            idx (int): index of the example
+
+        Returns:
+            np.ndarray. Shape: [Frequency, Time]. Energy spectrogram of the example indexed 'idx'
+        """
+
+        return self.magnitudes[idx]
+
+    def get_phase(self, idx):
+        r"""Get the phase of the example 'idx'
+
+        Args:
+            idx (int): index of the example
+
+        Returns:
+            np.ndarray. Shape: [Frequency, Time]. Phase of the stft of the example indexed 'idx'
+        """
+
+        return self.phases[idx]
+
+    def get_labels(self, idx):
+        r"""Get the labels of the example 'idx'
+
+        Args:
+            idx (int): index of the example
+
+        Returns:
+            torch.tensor. Shape: [n_classes]. Labels of the example indexed 'idx'.
+        """
+
+        return self.labels[idx]
 
     def n_classes(self):
         r"""Get the number of classes in the data set.
@@ -1149,3 +1202,429 @@ class AudiosetSegments(AudioDataSet):
         """
 
         return self.features.shape[0]
+
+
+class AudiosetSegmentsOnDisk(torchdata.Dataset):
+    r"""This class implements a data set class from audio data taken from Audioset..
+
+        This Class differs from AudiosetSegments because the features for each audio files have been saved in
+        individual hdf5 files. Thus, with this class the features for a file are loaded when they are needed,
+        which requires a lot less RAM than loading all features in memory at initialization.
+    """
+
+    @classmethod
+    def default_config(cls):
+        r"""Get the available audio features parameters
+
+            For this set, the feature extraction happens before hand with fixed parameters. Therefore, USER MUST MAKE
+            SURE that the parameters here match the ones used during features extraction.
+
+        Returns:
+            Dictionary with audio feature extraction parameters
+        """
+
+        config = {
+            # Audio mixture files parameters
+            "sampling_rate": 16000,
+
+            # Only log Mel-spectrogram supported !
+            "feature_type": "log-mel-spectrogram",
+
+            # spectrogram parameters
+            "STFT_frame_width_ms": 10,  # Amount of audio to include in the fft during the stft in milli-seconds.
+            "STFT_frame_shift_ms": 5,  # Amount of time shift between 2 fft during the stft in milli-seconds
+            "STFT_window_function": "hann",  # Window function to use in the stft
+
+            # Mel scaling parameters
+            "n_Mel_filters": 40,  # Number of mel filters
+            "Mel_min_freq": 0,  # Minimal frequency of the Mel scale
+            "Mel_max_freq": 8000,  # Maximal frequency of the Mel scale (should not be superior to sampling_rate / 2)
+
+            "data_folder": "Datadir/audioset_segments_split_features",
+            # Path to the folder containing the audio data. Better to pass absolute path.
+
+            # type of feature normalization: "min-max scaling", "standardization" see shift_and_scale()
+            # Used for scaling and centering the audio features using data set statistics during training
+            "scaling_type": "standardization"
+        }
+        return config
+
+    def __init__(self, config, wav_filenames, feature_filenames):
+        r"""Constructor. Store audio processing parameters and build mel matrix.
+
+        Args:
+            config (dict): Dictionary with audio features parameters. Saved as class variable.
+            wav_filenames (list): List of the .wav files in the dataset.
+            feature_filenames (list): list of the .hdf5 files containing the features of the examples in the data set.
+        """
+
+        super(AudiosetSegmentsOnDisk, self).__init__()
+
+        self.config = config
+        self.wav_filenames = wav_filenames
+        self.feature_filenames = feature_filenames
+
+        self.device = 'cpu'
+        self.do_shift_scaling = False
+        self.shift = [0.0]
+        self.scaling = [1.0]
+
+        self.frame_size = config['sampling_rate'] * config['STFT_frame_width_ms'] // 1000  # in number of samples
+        self.n_fft = next_power_of_2(self.frame_size)  # Number of samples in fft segments (audio + padding)
+
+        self.mel_filterbank = librosa.filters.mel(self.config["sampling_rate"],
+                                                  n_fft=self.n_fft,
+                                                  n_mels=self.config["n_Mel_filters"],
+                                                  fmin=self.config["Mel_min_freq"],
+                                                  fmax=self.config["Mel_max_freq"]).astype(np.float32)
+        self.inverse_mel_filterbank = np.linalg.pinv(self.mel_filterbank)
+
+    @classmethod
+    @abstractmethod
+    def split(cls, config, which="all"):
+        r"""Build training, testing and validation sets.
+
+            Feature extraction process saves features and corresponding .wav file next for training, testing and
+            validation set altogether, and appends a prefix to indicate the set:
+                D: training     T: testing    V: validation
+
+        Args:
+            config (dict): dictionary with audio feature parameters required for building the data sets.
+            which (str): optional: to build only 1 of the 3 set partitions (training, testing or validation)
+
+        Returns:
+            (training_set, testing_set, validation_set): tuple of 3 data set.
+        """
+
+        feature_files = [file for file in sorted(os.listdir(config['data_folder'])) if file.endswith('.hdf5')]
+        training_feature_files = [file for file in feature_files if file.startswith('D_')]
+        testing_feature_files = [file for file in feature_files if file.startswith('T_')]
+        validation_feature_files = [file for file in feature_files if file.startswith('V_')]
+
+        wav_files = [file for file in sorted(os.listdir(config['data_folder'])) if file.endswith('.wav')]
+        training_wav_files = [file for idx, file in enumerate(wav_files) if feature_files[idx].startswith('D_')]
+        testing_wav_files = [file for idx, file in enumerate(wav_files) if feature_files[idx].startswith('T_')]
+        validation_wav_files = [file for idx, file in enumerate(wav_files) if feature_files[idx].startswith('V_')]
+
+        if which == "all":
+            return cls(config, training_wav_files, training_feature_files), \
+                   cls(config, testing_wav_files, testing_feature_files), \
+                   cls(config, validation_wav_files, validation_feature_files)
+        elif which == "train":
+            return cls(config, training_wav_files, training_feature_files)
+        elif which == "test":
+            return cls(config, testing_wav_files, testing_feature_files)
+        elif which == "val":
+            return cls(config, validation_wav_files, validation_feature_files)
+        else:
+            raise ValueError('Set ID ' + which + ' is not available.')
+
+    def features_shape(self):
+        r"""Get the pytorch shape of a training example features: [Channels, Frequency, Time]
+
+        Returns:
+            Shape of a training example.
+        """
+
+        return tuple(self.get_features(0).shape)
+
+    def n_classes(self):
+        r"""Get the number of classes in the data set.
+
+        Returns:
+            Number of labelled classes in the data set.
+        """
+
+        return self.get_labels(0).shape[0]
+
+    def to(self, device):
+        r"""Makes sure that the return tensor from 'get_features()', 'get_labels()' and '__get_item__()' are on 'device'
+
+        Args:
+            device (torch.device): The device to use.
+        """
+
+        self.device = device
+
+    def compute_shift_and_scaling(self):
+        r"""Gets the values from the data_set statistics saved in the data set 'metadata' file.
+
+        Returns:
+            (Shift, scaling): values of shift and scaling to use for centering and scaling the data set.
+        """
+
+        with open(os.path.join(self.config['data_folder'], 'metadata.json'), 'r') as meta_data_file:
+            meta_data = json.load(meta_data_file)
+        # List for channel dimension for consistency with other datasets. (is always of length 1)
+        # Feature extraction computes mean and std for each frequency bin. Here we take global average.
+        return [np.mean(meta_data['mean_std']['Log_Mel_Filterbank'][0]['__ndarray__'])],\
+               [np.mean(meta_data['mean_std']['Log_Mel_Filterbank'][1]['__ndarray__'])]
+
+    def shift_and_scale(self, shift, scaling):
+        r"""After this is called and until 'un_shift_and_scale()' is called, the features returned features will be
+            shifted and scaled with the input arguments
+
+        Args:
+            shift (list): shift to use for shifting to [0, 1] or centering, for each channel of the features
+            scaling (list): scaling factor, for each channel of the features.
+        """
+
+        self.do_shift_scaling = True
+        self.shift = shift
+        self.scaling = scaling
+
+    def shift_and_scale_features(self, features, shift, scaling):
+        r"""Shifts and scale the input features.
+
+        Args:
+            features (torch.tensor): features to shift and scale. Either simply features or batch of features
+            shift (list): shift for each feature channel
+            scaling (list): scaling for each feature channel
+
+        Returns:
+            Shifted and scaled features.
+        """
+
+        # If batch: 4 dims. If not batch: 3 dims, with 1st dim been always 1 (channel dim)
+        if len(features.shape) == 4:
+            return (features[:, 0, :, :] - shift[0]) / scaling[0]
+        elif len(features.shape) == 3:
+            return (features - shift[0]) / scaling[0]
+
+    def un_shift_and_scale(self, shift, scaling):
+        r"""After this is called, the return features will not be shifted and scaled.
+
+        Args:
+            shift (list): Unused, for compatibility with other datasets
+            scaling (list): Unused, for compatibility with other datasets
+
+        """
+
+        self.do_shift_scaling = False
+        self.shift = [0.0]
+        self.scaling = [1.0]
+
+    def rescale_to_initial(self, features, shift, scaling):
+        r"""Invert the scaling and shifting of the input 'features'. Inplace.
+
+            In spirit, this is features.un_shift_and_scale(shift, scaling), but un_shift_and_scale is operating on
+            entire Dataset while this operates on a batch of features.
+
+        Args:
+            features (torch.tensor): audio features to un-scale and un-shift. shape: [Batch, Channel, Frequency,
+            Time]
+            shift (list): shift value to revert, for each feature channel
+            scaling (list): scaling factor to inverse, for each feature channel.
+
+        """
+
+        for i in range(features.shape[1]):
+            features[:, i, :, :] = (features[:, i, :, :] * scaling[i].to(features[:, i, :, :].device)) \
+                                   + shift[i].to(features[:, i, :, :].device)
+
+    def stft_magnitude_to_features(self, magnitude):
+        r"""Calculate audio features from input.
+
+            Replicates the computation of the log Mel-spectrogram features computation used for training.
+
+        Args:
+            magnitude (np.ndarray): Magnitude of the stft of an audio example. shape: [Frequency, Time]
+
+        Returns:
+            Processed features from the input magnitude or mel-spectrogram.
+        """
+
+        mel_spectrogram = np.power(self.mel_filterbank @ magnitude,
+                                   2.0)  # mel scale, amplitude to power spectral density
+        return librosa.power_to_db(mel_spectrogram)  # ~= 10 * log10()
+
+    def features_to_stft_magnitudes(self, features, _):
+        r"""Computes the STFT magnitude corresponding to the input batch of features
+
+            Invert log and Mel scaling using the pseudo-inverse of the Mel filterbank matrix.
+
+        Args:
+            features (np.ndarray): batch of features. shape: [Batch, Channel, (Mel-)Frequency, Time]
+            _ (int): Not used, present for compatibility with other datasets.
+
+        Returns:
+            STFT magnitude representation corresponding to the input features.
+        """
+
+        mel_spectrograms = librosa.db_to_amplitude(features)
+        return self.inverse_mel_filterbank[np.newaxis, np.newaxis, ...] @ mel_spectrograms
+
+    def separated_stft(self, audio):
+        r"""Compute the short-time Fourier transform of the audio waveform and separate magnitude from phase,
+            in the same way than what was done during the feature extraction.
+
+        Args:
+            audio (np.ndarray): audio waveform. shape: [number of samples]
+
+        Returns:
+            (magnitude, phase): magnitude and phase component of the STFT of audio.
+        """
+
+        frame_size = self.config['sampling_rate'] * self.config['STFT_frame_width_ms'] // 1000
+        noverlap = math.ceil(frame_size / 2)
+        n_fft = next_power_of_2(frame_size)
+
+        _, _, stft = scipy.signal.stft(audio,
+                                       window=self.config['STFT_window_function'],
+                                       nperseg=frame_size,
+                                       noverlap=noverlap,
+                                       nfft=n_fft,
+                                       detrend=False,
+                                       return_onesided=True,
+                                       boundary=None,
+                                       padded=False,
+                                       axis=-1)
+
+        magnitude = np.abs(stft)
+        phase = np.exp(1.j * np.angle(stft))
+        return magnitude, phase
+
+    def istft(self, stft):
+        r"""Compute inverse short-time Fourier transform: reverse operation that the STFT computed in
+        separated_stft()
+
+        Args:
+            stft (np.ndarray): STFT array (complex). shape: [Frequency, Time]
+
+        Returns:
+            np.ndarray. Audio waveform
+        """
+
+        frame_size = self.config['sampling_rate'] * self.config['STFT_frame_width_ms'] // 1000
+        noverlap = math.ceil(frame_size / 2)
+        n_fft = next_power_of_2(frame_size)
+
+        _, istft = scipy.signal.istft(stft,
+                                      window=self.config['STFT_window_function'],
+                                      nperseg=frame_size,
+                                      noverlap=noverlap,
+                                      nfft=n_fft,
+                                      input_onesided=True,
+                                      boundary=None)
+        return istft
+
+    def load_audio(self, filename):
+        r"""Load an audio waveform from .wav file into memory.
+
+            Re-sampling is performed if the sampling rate of the file differs from the Dataset sampling rate.
+            Stereo file are converted to mono-channel.
+
+        Args:
+            filename (str): Path to the .wav file.
+
+        Returns:
+            np.ndarray. Aduio waveform
+        """
+
+        audio, _ = librosa.core.load(filename, sr=self.config["sampling_rate"], mono=True)
+        return audio
+
+    @abstractmethod
+    def audio_full_filename(self, filename_basename):
+        r"""Get the path to an audio file, given its relative path in the data_folder.
+
+        Args:
+            filename_basename (str): Path of the audio file in the data folder.
+
+        Returns:
+            Path to an audio file.
+        """
+
+        return os.path.join(self.config['data_folder'], filename_basename)
+
+    def get_features(self, idx):
+        r"""Get the features of the example 'idx'
+
+        Args:
+            idx (int): index of the example
+
+        Returns:
+            torch.tensor. Shape: [Channel=1, Frequency, Time]. Features of the example indexed 'idx'
+        """
+
+        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[idx]), 'r') as f:
+            # During feature calculation, we have [Time, Freq] shape.
+            # Transpose here for consistency with the other datasets.
+            features = torch.tensor(f['Log_Mel_Filterbank'], device=self.device).transpose(0, 1).unsqueeze(0)
+        if self.do_shift_scaling:
+            features = self.shift_and_scale_features(features, self.shift, self.scaling)
+        return features
+
+    def get_magnitude(self, idx):
+        r"""Get the energy spectrogram (stft magnitude) of the example 'idx'
+
+        Args:
+            idx (int): index of the example
+
+        Returns:
+            np.ndarray. Shape: [Frequency, Time]. Energy spectrogram of the example indexed 'idx'
+        """
+
+        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[idx]), 'r') as f:
+            # During feature calculation, we have [Time, Freq] shape.
+            # Transpose here for consistency with the other datasets.
+            magnitude = np.array(f['magnitude']).T
+        return magnitude
+
+    def get_phase(self, idx):
+        r"""Get the phase of the example 'idx'
+
+        Args:
+            idx (int): index of the example
+
+        Returns:
+            np.ndarray. Shape: [Frequency, Time]. Phase of the stft of the example indexed 'idx'
+        """
+
+        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[idx]), 'r') as f:
+            # During feature calculation, we have [Time, Freq] shape.
+            # Transpose here for consistency with the other datasets.
+            phase = np.array(f['phase']).T
+        return phase
+
+    def get_labels(self, idx):
+        r"""Get the labels of the example 'idx'
+
+        Args:
+            idx (int): index of the example
+
+        Returns:
+            torch.tensor. Shape: [n_classes]. Labels of the example indexed 'idx'.
+        """
+
+        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[idx]), 'r') as f:
+            labels = torch.tensor(f['labels'][:].astype(np.float32), device=self.device)
+            # take max along time dim (ie a label for 1 frame is enough to get the label for the entire segment)
+            labels, _ = torch.max(labels, dim=1)
+        return labels
+
+    def __getitem__(self, index):
+        r"""Torch.data.Dataset method for getting an item in the data set.
+
+            This method needs to be implemented to be able to iterate over the dataset.
+            In order to train multi-pcen, it is advised in
+            Yuxian Wang et al. "Trainable Frontend For Robust and Far-Field Keyword Spotting" (2016)
+            to use different mixture volume to help the network learn the dynamic range compression parameters.
+            This is done here by randomly changing the intensity of the features during the training.
+
+        Args:
+            index (int): Index of an audio example
+
+        Returns:
+            (audio features, labels) of this example
+        """
+
+        return self.get_features(index), self.get_labels(index)
+
+    def __len__(self):
+        r"""
+        Returns:
+            Length of the Dataset (number of audio examples in the data set).
+        """
+
+        return len(self.wav_filenames)

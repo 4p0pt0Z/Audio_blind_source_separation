@@ -237,7 +237,7 @@ class AudioSeparator:
         # Loop over all the files in the dataset.
         for idx in range(self.data_set.__len__()):
             # Get the features
-            features = self.data_set.__getitem__(idx)[0]
+            features = self.data_set.get_features(idx)
             # Get the separation masks
             _, masks = self.model(features.unsqueeze(0))  # (add batch dimension)
             masks = masks.detach().squeeze()  # move "mask" dim in first position
@@ -246,11 +246,11 @@ class AudioSeparator:
                 spectrograms = self.separate_spectrogram(masks, features, idx)
             elif separation_method == 'in_lin':
                 spectrograms = self.separate_spectrogram_in_lin_scale(masks, features.shape,
-                                                                      self.data_set.magnitudes[idx])
+                                                                      self.data_set.get_magnitude(idx))
             else:
                 raise ValueError('Separation method ' + separation_method + ' is not available.')
             # Get the separated audio and save
-            audios = [self.spectrogram_to_audio(spectrogram, self.data_set.phases[idx]) for spectrogram in spectrograms]
+            audios = [self.spectrogram_to_audio(spectrogram, self.data_set.get_phase(idx)) for spectrogram in spectrograms]
             self.save_separated_audio(audios, self.data_set.filenames[idx])
 
     def evaluate_separation(self, indices=None):
