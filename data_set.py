@@ -133,6 +133,7 @@ class AudioDataSet(torchdata.Dataset):
         self.labels = None
         self.magnitudes = None
         self.phases = None
+        self.classes = None
 
     @classmethod
     @abstractmethod
@@ -274,6 +275,29 @@ class AudioDataSet(torchdata.Dataset):
 
         for i in range(self.features.shape[1]):  # per channel
             self.features[:, i, :, :] = (self.features[:, i, :, :] - shift[i]) / scaling[i]
+
+    def shift_and_scale_features(self, features, shift, scaling):
+        r"""Shifts and scale the input features.
+
+        Args:
+            features (torch.tensor): features to shift and scale. Either simply features or batch of features
+            shift (list): shift for each feature channel
+            scaling (list): scaling for each feature channel
+
+        Returns:
+            Shifted and scaled features.
+        """
+
+        result = features.detach().clone()
+        # If batch: 4 dims. If not batch: 3 dims, with 1st dim been always 1 (channel dim)
+        if len(features.shape) == 4:
+            for c in range(features.shape[1]):
+                result[:, 0, :, :] = (result[:, 0, :, :] - shift[0]) / scaling[0]
+        elif len(features.shape) == 3:
+            for c in range(features.shape[0]):
+                result[c, :, :] = (result[c, :, :] - shift[0]) / scaling[0]
+
+        return result
 
     def un_shift_and_scale(self, shift, scaling):
         r"""Invert the shift and scaling. Inplace.
@@ -1279,6 +1303,10 @@ class AudiosetSegmentsOnDisk(torchdata.Dataset):
                                                   fmax=self.config["Mel_max_freq"]).astype(np.float32)
         self.inverse_mel_filterbank = np.linalg.pinv(self.mel_filterbank)
 
+        with open(os.path.join(self.config['data_folder'], 'metadata.json'), 'r') as meta_data_file:
+            meta_data = json.load(meta_data_file)
+            self.classes = meta_data['classes']
+
     @classmethod
     @abstractmethod
     def split(cls, config, which="all"):
@@ -1547,13 +1575,7 @@ class AudiosetSegmentsOnDisk(torchdata.Dataset):
             torch.tensor. Shape: [Channel=1, Frequency, Time]. Features of the example indexed 'idx'
         """
 
-        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[idx]), 'r') as f:
-            # During feature calculation, we have [Time, Freq] shape.
-            # Transpose here for consistency with the other datasets.
-            features = torch.tensor(f['Log_Mel_Filterbank'], device=self.device).transpose(0, 1).unsqueeze(0)
-        if self.do_shift_scaling:
-            features = self.shift_and_scale_features(features, self.shift, self.scaling)
-        return features
+        return self.__getitem__(idx)[0]
 
     def get_magnitude(self, idx):
         r"""Get the energy spectrogram (stft magnitude) of the example 'idx'
@@ -1565,7 +1587,7 @@ class AudiosetSegmentsOnDisk(torchdata.Dataset):
             np.ndarray. Shape: [Frequency, Time]. Energy spectrogram of the example indexed 'idx'
         """
 
-        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[idx]), 'r') as f:
+        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[idx]), 'r', swmr=True) as f:
             # During feature calculation, we have [Time, Freq] shape.
             # Transpose here for consistency with the other datasets.
             magnitude = np.array(f['magnitude']).T
@@ -1581,7 +1603,7 @@ class AudiosetSegmentsOnDisk(torchdata.Dataset):
             np.ndarray. Shape: [Frequency, Time]. Phase of the stft of the example indexed 'idx'
         """
 
-        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[idx]), 'r') as f:
+        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[idx]), 'r', swmr=True) as f:
             # During feature calculation, we have [Time, Freq] shape.
             # Transpose here for consistency with the other datasets.
             phase = np.array(f['phase']).T
@@ -1597,29 +1619,31 @@ class AudiosetSegmentsOnDisk(torchdata.Dataset):
             torch.tensor. Shape: [n_classes]. Labels of the example indexed 'idx'.
         """
 
-        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[idx]), 'r') as f:
-            labels = torch.tensor(f['labels'][:].astype(np.float32), device=self.device)
-            # take max along time dim (ie a label for 1 frame is enough to get the label for the entire segment)
-            labels, _ = torch.max(labels, dim=1)
-        return labels
+        return self.__getitem__(idx)[1]
 
     def __getitem__(self, index):
         r"""Torch.data.Dataset method for getting an item in the data set.
 
             This method needs to be implemented to be able to iterate over the dataset.
-            In order to train multi-pcen, it is advised in
-            Yuxian Wang et al. "Trainable Frontend For Robust and Far-Field Keyword Spotting" (2016)
-            to use different mixture volume to help the network learn the dynamic range compression parameters.
-            This is done here by randomly changing the intensity of the features during the training.
 
         Args:
             index (int): Index of an audio example
 
         Returns:
-            (audio features, labels) of this example
+            (audio features, labels)
         """
 
-        return self.get_features(index), self.get_labels(index)
+        with h5py.File(os.path.join(self.config['data_folder'], self.feature_filenames[index]), 'r', swmr=True) as f:
+            # During feature calculation, we have [Time, Freq] shape.
+            # Transpose here for consistency with the other datasets.
+            features = torch.tensor(f['Log_Mel_Filterbank'], device=self.device).transpose(0, 1).unsqueeze(0)
+            labels = torch.tensor(f['labels'][:].astype(np.float32), device=self.device)
+        if self.do_shift_scaling:
+            features = self.shift_and_scale_features(features, self.shift, self.scaling)
+        # take max along time dim (ie a label for 1 frame is enough to get the label for the entire segment)
+        labels, _ = torch.max(labels, dim=1)
+
+        return features, labels
 
     def __len__(self):
         r"""

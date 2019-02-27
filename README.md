@@ -38,15 +38,31 @@ masks and several kind of classifier models, using 3 possible data sets.
 ### Data sets
 3 data sets have been used for training models:
 * [DCASE2013 Sound Event Detection data set](http://c4dm.eecs.qmul.ac.uk/sceneseventschallenge/description.html) (task 2)
-The audio events of this set (look for DCASE2013_SED/singlesounds_stereo/singlesounds_stereo) can be mixed using the 
-`generate_weakly_labelled_audio_mixtures_from_DCASE2013.py` script to create audio mixtures.
+The audio events of this set (in  DCASE2013_SED/singlesounds_stereo/singlesounds_stereo) can be mixed using the 
+`generate_weakly_labelled_audio_mixtures_from_DCASE2013.py` script to create audio mixtures used for the training.
 * [TUT Rare Sound Event Data set](http://www.cs.tut.fi/sgn/arg/dcase2017/challenge/task-rare-sound-event-detection)
 This data set is used in [1] and the mixtures are create using the 
-[code from the authors](https://github.com/qiuqiangkong/ICASSP2018_joint_separation_classification). (theire 
-`runme.sh` script produces the features in `/mixed_audio` and the labels in `/mixed_yaml`)
+[code from the authors](https://github.com/qiuqiangkong/ICASSP2018_joint_separation_classification). To generate this 
+data: install their repository in a separate environment and run their runme.sh script. This script will launch the 
+generation of the audio mixtures, features and associated labels, and save them in `mixed_audio`, respectively 
+`packed_features\logmel` and `mixed_yamls`
 * [Audioset](https://research.google.com/audioset/) Recordings from a few classes from Audioset have been re-labelled by 
 [CloudFactory](https://www.cloudfactory.com/). These new labels can be used to generate smaller recordings with labels 
-for training using `generate_audioset_segments.py` 
+for training using `generate_audioset_segments.py`: this script generates the audio segments and saves the features and
+labels in a unique `.hdf5` file for each set part (training, testing, validation).  
+Alternatively, the script `generate_audioset_files_for_feature_extraction.py` generates the audio segments, and for each segment
+a `.json` file containing the classes timestamps. These can then be used to generate audio features using the features 
+extractor of Logitech, which will produce a `.hdf5` file for each audio segment. These features can then be used with 
+the `AudiosetSegmentsOnDisk` dataset class for training.
+
+To use the framework with new data, please follow these steps: 
+- Write a dataset class inheriting from `AudioDataSet` (if your audio processing is similar to these class function) 
+or `torchdata.Dataset`. This class implements loading of the audio waveforms and the computation of the audio features, 
+and implements the `__getitem__` and `__len__` methods required to interact with the pytorch `DataLoader`.
+- In order to use the `AudioSeparator` class with your new data_set class, make sure it implements the `get_features`, 
+`get_magnitude` and `get_phase` methods.
+- Add your class to `find_data_set_class` in `data_set.py`. You can now your data_set class by passing it as a command
+line argument to the program. 
 
 
 ### Code Framework
@@ -177,4 +193,8 @@ The models used in this section were trained using the bash script `run_thesis_r
 
 The masks and spectrogram figures of the thesis were obtained with the `separation_examples_and_compute_metrics.py` 
 called on these models.
- 
+
+
+### Use a trained model to run separation on new audio files
+The notebook `use_model_example.ipynb` shows the procedure to use a trained model to run separation on an audio file.  
+Note: Jupyter notebook comes installed with anaconda.

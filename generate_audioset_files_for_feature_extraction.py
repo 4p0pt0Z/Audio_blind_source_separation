@@ -257,7 +257,7 @@ def merge_remove_duplicates(segment_names, labels, durations, segments_timestamp
            np.delete(segments_timestamps, to_remove_indices, axis=0)
 
 
-def split_files_and_rename(segment_names, labels, durations, segments_timestamps, config):
+def split_files(segment_names, labels, durations, segments_timestamps, config):
     r"""Make stratified (multilabel) training, testing and validation split of the segments, and add a prefix to the
         segment name to indicate to which set it belongs.
 
@@ -279,23 +279,6 @@ def split_files_and_rename(segment_names, labels, durations, segments_timestamps
     dev_index, test_index = next(
         dev_test_sss.split(np.zeros(labels[dev_test_index].shape[0]), labels[dev_test_index]))
 
-    new_names = collections.deque()
-
-    for file in segment_names[train_index]:
-        os.rename(os.path.join(config['output_folder'], file),
-                  os.path.join(config['output_folder'], 'D_' + file))
-        new_names.append('D_' + file)
-
-    for file in segment_names[dev_test_index][dev_index]:
-        os.rename(os.path.join(config['output_folder'], file),
-                  os.path.join(config['output_folder'], 'T_' + file))
-        new_names.append('T_' + file)
-
-    for file in segment_names[dev_test_index][test_index]:
-        os.rename(os.path.join(config['output_folder'], file),
-                  os.path.join(config['output_folder'], 'V_' + file))
-        new_names.append('V_' + file)
-
     def array_to_list(array):
         r"""Recursive implementation of tolist function for numpy array"""
         if isinstance(array, np.ndarray):
@@ -307,14 +290,21 @@ def split_files_and_rename(segment_names, labels, durations, segments_timestamps
         else:
             return array
 
-    for idx, file in enumerate(new_names):
+    for idx, file in enumerate(segment_names):
         with open(os.path.join(config['output_folder'], os.path.splitext(file)[0] + '.json'), 'w') as json_file:
             json.dump({'label': labels[idx].tolist(),
                        'durations': durations[idx].tolist(),
                        'timestamps': array_to_list(segments_timestamps[idx].tolist())},
                       json_file)
 
-    return np.array(new_names)
+    with open(os.path.join(config['output_folder'], 'config.json'), 'w') as json_file:
+        json.dump({'classes': config['classes'],
+                   'sampling_rate': config['sampling_rate'],
+                   'length_segments_s': config['length_segments_s'],
+                   'Training_files': array_to_list(segment_names[train_index]),
+                   'Testing_files': array_to_list(segment_names[dev_test_index][dev_index]),
+                   'Validation_files': array_to_list(segment_names[dev_test_index][test_index])},
+                  json_file)
 
 
 def main():
@@ -335,7 +325,7 @@ def main():
               "sampling_rate": 16000,
 
               # Minimum portion of a segment that is labeled for the total segment to get the label
-              "label_threshold": 0.1}
+              "label_threshold": 0.07}
 
     # The argument in config are exposed as command line arguments. Parse these arguments.
     parser = argparse.ArgumentParser(allow_abbrev=False,
@@ -395,7 +385,7 @@ def main():
         merge_remove_duplicates(segment_names, labels, durations, segments_timestamps)
 
     # Perform training, testing and validation split, and save the labels and time stamps of each segments.
-    new_names = split_files_and_rename(segment_names, labels, durations, segments_timestamps, config)
+    split_files(segment_names, labels, durations, segments_timestamps, config)
 
 
 if __name__ == '__main__':

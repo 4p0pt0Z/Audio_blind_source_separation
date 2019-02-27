@@ -232,8 +232,8 @@ class TrainingManager:
         r"""Compute a classification metric score.
 
         Args:
-            labels (torch.tensor): Groundtruth labels
-            predictions (torch.tensor): Models predictions
+            labels (np.ndarray): Groundtruth labels
+            predictions (np.ndarray): Models predictions
             average (str): sklearn 'average' argument: how to aggregate the metric score accros classes
                            If the parameter is not passed: will use the value in self.config
 
@@ -289,14 +289,14 @@ class TrainingManager:
         """
 
         print("Epoch {} on {} set - ".format(epoch_idx, set_type) + self.config["loss_f"]
-              + " loss: {:.4f} - ".format(loss_value), end='')
+              + " loss: {:.4f} - ".format(loss_value), end='', flush=True)
         if self.config["average"] != "None":
-            print(self.config["average"] + " ", end='')
-        print(self.config["metric"] + ": ", end='')
+            print(self.config["average"] + " ", end='', flush=True)
+        print(self.config["metric"] + ": ", end='', flush=True)
         if isinstance(metric_value, np.ndarray):
-            print(["{:.4f}".format(value) for value in metric_value])
+            print(["{:.4f}".format(value) for value in metric_value], flush=True)
         else:
-            print(": {:.4f}".format(metric_value))
+            print(": {:.4f}".format(metric_value), flush=True)
 
     def train(self):
         r"""Training loop"""
