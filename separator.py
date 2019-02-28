@@ -166,7 +166,7 @@ class AudioSeparator:
         # data"; In: CoRR abs/1711.03037 (2017). axXiv: 1711.03037 URL: http://arxiv.org/abs/1711.03037
         if self.config['feature_type'] != 'spectrogram':
             masks = np.asarray([np.transpose(
-                self.data_set.mel_filterbank / (np.sum(self.data_set.mel_filterbank, axis=0) + 1e-8)) @ mask
+                self.data_set.mel_filterbank / (np.sum(self.data_set.mel_filterbank, axis=0) + 1e-8)) @ mask.numpy()
                                 for mask in masks.squeeze()])
 
         # Apply the masks to the mixture spectrogram. Mask.shape: [n_sources, channel=1, Frequency, Time]
